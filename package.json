@@ -1,0 +1,54 @@
+{
+  "name": "openchat",
+  "version": "0.13.0",
+  "description": "Control OpenCode from anywhere via Telegram, Feishu, or WeChat",
+  "type": "module",
+  "bin": {
+    "opencode-remote": "./bin/opencode-remote.js",
+    "opencode-weixin": "./bin/opencode-weixin.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "node dist/cli.js",
+    "dev:weixin": "node dist/cli.js weixin",
+    "dev:telegram": "node dist/cli.js telegram",
+    "dev:feishu": "node dist/cli.js feishu",
+    "start": "node dist/index.js",
+    "test": "echo \"No tests configured\" && exit 0",
+    "prepublishOnly": "echo \"No build required\""
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "@opencode-ai/sdk": "^1.2.27",
+    "express": "^5.2.1",
+    "grammy": "^1.30.0",
+    "undici": "^7.24.5"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/你的用户名/openchat.git"
+  },
+  "keywords": [
+    "opencode",
+    "telegram",
+    "feishu",
+    "lark",
+    "weixin",
+    "remote-control",
+    "ai",
+    "coding"
+  ],
+  "author": "",
+  "license": "MIT",
+  "funding": {
+    "type": "opencollective",
+    "url": "https://opencollective.com/openchat"
+  }
+}

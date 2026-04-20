@@ -1,0 +1,12 @@
+node_modules/
+dist/node_modules/
+.claude/
+*.log
+.env
+.DS_Store
+Thumbs.db
+
+# 防止敏感文件
+**/key*.js
+**/test*.js
+**/APIKEY*.md
