@@ -12,6 +12,7 @@ import { startWeixinBot } from './weixin/bot.js';
 import { setGlobalProxy } from './opencode/client.js';
 import { loadWeixinCredentials } from './weixin/bot.js';
 import { registry } from './core/registry.js';
+import { loadConfig } from './core/config.js';
 const CONFIG_DIR = join(homedir(), '.opencode-remote');
 const CONFIG_FILE = join(CONFIG_DIR, '.env');
 // Read version from package.json to avoid hardcoding
@@ -318,67 +319,7 @@ function showFeishuSetupGuide() {
     console.log('');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 }
-async function getConfig() {
-    const config = {
-        opencodeServerUrl: process.env.OPENCODE_SERVER_URL || 'http://localhost:3000',
-        tunnelUrl: process.env.TUNNEL_URL || '',
-        sessionIdleTimeoutMs: parseInt(process.env.SESSION_IDLE_TIMEOUT_MS || '1800000', 10),
-        cleanupIntervalMs: parseInt(process.env.CLEANUP_INTERVAL_MS || '300000', 10),
-        approvalTimeoutMs: parseInt(process.env.APPROVAL_TIMEOUT_MS || '300000', 10),
-    };
-    // Check config file
-    if (existsSync(CONFIG_FILE)) {
-        const content = readFileSync(CONFIG_FILE, 'utf-8');
-        // Parse Telegram token
-        const telegramMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/);
-        if (telegramMatch) {
-            const token = telegramMatch[1].trim();
-            if (token && token !== 'your_bot_token_here') {
-                config.telegramBotToken = token;
-            }
-        }
-        // Parse Feishu config
-        const feishuAppIdMatch = content.match(/FEISHU_APP_ID=(.+)/);
-        if (feishuAppIdMatch) {
-            config.feishuAppId = feishuAppIdMatch[1].trim();
-        }
-        const feishuSecretMatch = content.match(/FEISHU_APP_SECRET=(.+)/);
-        if (feishuSecretMatch) {
-            config.feishuAppSecret = feishuSecretMatch[1].trim();
-        }
-    }
-    // Check environment variables
-    if (process.env.TELEGRAM_BOT_TOKEN?.trim()) {
-        config.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN.trim();
-    }
-    if (process.env.FEISHU_APP_ID?.trim()) {
-        config.feishuAppId = process.env.FEISHU_APP_ID.trim();
-    }
-    if (process.env.FEISHU_APP_SECRET?.trim()) {
-        config.feishuAppSecret = process.env.FEISHU_APP_SECRET.trim();
-    }
-    // Check local .env
-    const localEnv = join(process.cwd(), '.env');
-    if (existsSync(localEnv)) {
-        const content = readFileSync(localEnv, 'utf-8');
-        const telegramMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/);
-        if (telegramMatch) {
-            const token = telegramMatch[1].trim();
-            if (token && token !== 'your_bot_token_here' && !config.telegramBotToken) {
-                config.telegramBotToken = token;
-            }
-        }
-        const feishuAppIdMatch = content.match(/FEISHU_APP_ID=(.+)/);
-        if (feishuAppIdMatch) {
-            config.feishuAppId = feishuAppIdMatch[1].trim();
-        }
-        const feishuSecretMatch = content.match(/FEISHU_APP_SECRET=(.+)/);
-        if (feishuSecretMatch) {
-            config.feishuAppSecret = feishuSecretMatch[1].trim();
-        }
-    }
-    return config;
-}
+// getConfig moved to ./core/config.js
 async function saveConfig(token) {
     // Create config directory if needed
     if (!existsSync(CONFIG_DIR)) {
@@ -613,7 +554,7 @@ async function runAgentsCommand() {
     console.log('Example: /cc to switch to Claude Code');
 }
 async function runStart() {
-    const config = await getConfig();
+    const config = await loadConfig();
     // Check what's configured
     const hasTelegram = hasTelegramConfig(config);
     const hasFeishu = hasFeishuConfig(config);
@@ -683,7 +624,7 @@ async function runStart() {
     await new Promise(() => {});
 }
 async function runTelegramOnly() {
-    const config = await getConfig();
+    const config = await loadConfig();
     if (!hasTelegramConfig(config)) {
         console.log('❌ Telegram bot not configured!');
         console.log('\nRun: opencode-remote config');
@@ -701,7 +642,7 @@ async function runTelegramOnly() {
     }
 }
 async function runFeishuOnly() {
-    const config = await getConfig();
+    const config = await loadConfig();
     if (!hasFeishuConfig(config)) {
         console.log('❌ Feishu bot not configured!');
         console.log('\nRun: opencode-remote config');
@@ -718,7 +659,7 @@ async function runFeishuOnly() {
     }
 }
 async function runWeixinOnly() {
-    const config = await getConfig();
+    const config = await loadConfig();
     // 直接运行 bot，进程管理由 bin/opencode-remote.js 处理
     printBanner();
     console.log('🤖 Starting Weixin bot...');

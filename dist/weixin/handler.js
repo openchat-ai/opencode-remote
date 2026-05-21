@@ -9,7 +9,8 @@ import { randomBytes } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { autoFlush } from './adapter.js';
-import { detectCommand, handleCommand, formatTimeAgo, _registerStartLoopCycle } from './commands.js';
+import { detectCommand } from '../core/router.js';
+import { handleCommand, formatTimeAgo, _registerStartLoopCycle } from './commands.js';
 
 async function startLoopCycle(adapter, ctx, openCodeSessions, session) {
     if (!session.loopMode) return;

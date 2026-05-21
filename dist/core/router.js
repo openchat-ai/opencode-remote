@@ -1,5 +1,6 @@
 // Message router - full command definitions shared across all platforms
 import { registry } from './registry.js';
+import { initOpenCode, listProviders, updateGlobalModel, checkConnection, resumeSession, shareSession } from '../opencode/client.js';
 
 export const COMMAND_ALIASES = {
     start: ['start'],
@@ -73,6 +74,33 @@ export function parseMessage(text) {
     return { type: 'default', prompt: trimmed };
 }
 
+function formatTimeAgo(timestamp) {
+    const diff = Date.now() - timestamp;
+    const seconds = Math.floor(diff / 1000);
+    if (seconds < 60) return `${seconds}秒前`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    return `${Math.floor(hours / 24)}天前`;
+}
+
+async function getSessionsList() {
+    const opencode = await initOpenCode();
+    if (!opencode) return null;
+    const result = await opencode.client.session.list();
+    if (result.error || !result.data) return [];
+    return result.data.sort((a, b) => (b.time?.updated || b.updated_at || 0) - (a.time?.updated || a.updated_at || 0));
+}
+
+async function getSessionMessages(sessionId) {
+    const opencode = await initOpenCode();
+    if (!opencode) return null;
+    const result = await opencode.client.session.messages({ path: { id: sessionId } });
+    if (result.error) return null;
+    return result.data || [];
+}
+
 export async function routeMessage(parsed, ctx) {
     switch (parsed.type) {
         case 'command': {
@@ -85,11 +113,19 @@ export async function routeMessage(parsed, ctx) {
 /status — 连接状态
 /reset — 清空会话
 /restart — 重启 bot
+/stop — 停止 bot
 /sessions — 浏览会话
+/delsessions — 删除会话
 /loop — 循环任务
-/edit — 编辑消息
-/upload — 上传构建产物
+/compact — 压缩上下文
+/summary — 会话摘要
+/copy — 复制回复
+/revert — 撤销消息
+/commit — 生成提交信息
+/review — 代码审查
+/flush — 刷新记忆
 /model — 切换模型
+/upload — 上传构建产物
 
 🤖 AI Agent:
 /oc <提示> — OpenCode
@@ -99,6 +135,7 @@ export async function routeMessage(parsed, ctx) {
 /agents — 查看可用 Agent
 
 💬 其他消息直接发给 AI!`;
+
                 case 'agents': {
                     const agents = registry.listAgents();
                     const lines = ['🤖 可用 AI Agent:'];
@@ -114,15 +151,153 @@ export async function routeMessage(parsed, ctx) {
                     lines.push('切换: /oc /cc /cx /copilot');
                     return lines.join('\n');
                 }
-                case 'status':
-                    return '🔄 检查连接状态...';
+
+                case 'status': {
+                    const connected = await checkConnection();
+                    return `${connected ? '✅' : '❌'} OpenCode ${connected ? '在线' : '离线'}`;
+                }
+
                 case 'start':
                     return '🚀 准备就绪，发送消息给 OpenCode 开始工作';
+
                 case 'reset':
                 case 'new':
                     return '🔄 会话已重置';
-                case 'model':
-                    return '🧠 用法: /model <provider/model>';
+
+                case 'restart':
+                    return '🔄 重启信号已发送，bot 即将重启...';
+
+                case 'stop':
+                    return '🛑 停止信号已发送';
+
+                case 'sessions': {
+                    const sessions = await getSessionsList();
+                    if (!sessions || sessions.length === 0) return '📭 暂无会话';
+                    let msg = '📂 最近会话:\n\n';
+                    sessions.slice(0, 10).forEach((s, i) => {
+                        const title = s.title || '无标题';
+                        const time = s.updated_at ? formatTimeAgo(s.updated_at * 1000) : '';
+                        msg += `${i + 1}. ${title} (${time})\n`;
+                    });
+                    return msg;
+                }
+
+                case 'delsessions': {
+                    const sessions = await getSessionsList();
+                    if (!sessions || sessions.length === 0) return '📭 暂无会话可删除';
+                    let msg = '🗑️ 选择要删除的会话:\n\n';
+                    sessions.slice(0, 10).forEach((s, i) => {
+                        msg += `${i + 1}. ${s.title || '无标题'}\n`;
+                    });
+                    msg += '\n（在当前平台无法交互式选择，请使用 WeChat）';
+                    return msg;
+                }
+
+                case 'loop':
+                    if (parsed.arg === 'off' || parsed.arg === 'stop') return '⏹️ 循环任务已停止';
+                    if (parsed.arg === 'status') return '🔄 循环任务状态（在微信中查看详情）';
+                    return '🔄 循环任务已启动（完整控制请使用 WeChat）';
+
+                case 'compact': {
+                    if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
+                    const opencode = await initOpenCode();
+                    if (!opencode) return '❌ 无法连接 OpenCode';
+                    const result = await opencode.client.session.compact({ path: { id: ctx.opencodeSessionId } });
+                    return result.error ? `❌ 压缩失败: ${result.error}` : '✅ 上下文已压缩';
+                }
+
+                case 'summary': {
+                    if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
+                    const opencode = await initOpenCode();
+                    if (!opencode) return '❌ 无法连接 OpenCode';
+                    const result = await opencode.client.session.summarize({ path: { id: ctx.opencodeSessionId } });
+                    if (result.error) return `❌ 生成摘要失败: ${result.error}`;
+                    const msgs = await getSessionMessages(ctx.opencodeSessionId);
+                    if (msgs && msgs.length > 0) {
+                        const latest = msgs[msgs.length - 1];
+                        if (latest.parts) {
+                            const text = latest.parts.filter(p => p.type === 'text').map(p => p.text).join('\n');
+                            if (text) return `📋 会话摘要\n\n${text}`;
+                        }
+                    }
+                    return '✅ 摘要生成成功';
+                }
+
+                case 'copy': {
+                    if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
+                    const msgs = await getSessionMessages(ctx.opencodeSessionId);
+                    if (!msgs || msgs.length === 0) return '❌ 无法获取消息';
+                    const aiMsg = msgs.filter(m => m.info?.role === 'assistant').slice(-1)[0];
+                    if (!aiMsg) return '❌ 未找到 AI 回复';
+                    let content = '';
+                    if (aiMsg.parts) {
+                        for (const part of aiMsg.parts) {
+                            if (part.type === 'text') content += part.text + '\n';
+                            if (part.type === 'code') content += '```' + (part.language || '') + '\n' + part.code + '\n```\n';
+                        }
+                    }
+                    return content ? `📋 最新回复:\n\n${content.substring(0, 2000)}` : '❌ 没有可复制的内容';
+                }
+
+                case 'revert': {
+                    if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
+                    const opencode = await initOpenCode();
+                    if (!opencode) return '❌ 无法连接 OpenCode';
+                    if (parsed.arg === 'undo') {
+                        const ok = await opencode.client.session.unrevert?.({ path: { id: ctx.opencodeSessionId } });
+                        return ok ? '↩️ 已恢复撤销的内容' : '❌ 恢复失败';
+                    }
+                    const msgs = await getSessionMessages(ctx.opencodeSessionId);
+                    if (!msgs) return '❌ 无法获取消息';
+                    const lastAssistant = msgs.filter(m => m.info?.role === 'assistant' && m.time?.created).slice(-1)[0];
+                    if (!lastAssistant) return '📭 没有可撤销的消息';
+                    const ok = await opencode.client.session.revert({ path: { id: ctx.opencodeSessionId }, body: { messageID: lastAssistant.id } });
+                    return ok ? '↩️ 已撤销最近的消息' : '❌ 撤销失败';
+                }
+
+                case 'flush':
+                    return '🧠 记忆刷新需要项目目录，请在 WeChat 中使用';
+
+                case 'model': {
+                    try {
+                        if (parsed.arg) {
+                            const modelStr = parsed.arg.trim();
+                            const ok = await updateGlobalModel(modelStr);
+                            return ok ? `✅ 已切换模型至: ${modelStr}` : '❌ 切换失败';
+                        }
+                        const providers = await listProviders();
+                        if (!providers || providers.length === 0) return '❌ 无法获取模型列表';
+                        let msg = '🧠 可用模型:\n\n';
+                        for (const p of providers) {
+                            const modelIds = Object.keys(p.models || {});
+                            if (modelIds.length === 0) continue;
+                            msg += `${p.name} (${p.id}):\n`;
+                            for (const mid of modelIds.slice(0, 5)) {
+                                msg += `  ${p.id}/${mid}\n`;
+                            }
+                            if (modelIds.length > 5) msg += `  ...还有 ${modelIds.length - 5} 个\n`;
+                        }
+                        msg += '\n用法: /model <provider/model>';
+                        return msg;
+                    } catch (e) {
+                        return `❌ 模型操作失败: ${e.message}`;
+                    }
+                }
+
+                case 'commit':
+                case 'review':
+                case 'diff':
+                    return '📝 请在 WeChat 中使用此命令（需要交互式确认）';
+
+                case 'upload':
+                case 'delete':
+                    return '⬆️ 上传功能仅在 WeChat 中可用（已对接七牛云）';
+
+                case 'edit':
+                case 'analyze':
+                case 'scope':
+                    return '✏️ 此命令需要多轮交互，请在 WeChat 中使用';
+
                 default:
                     return '❓ 未知指令';
             }

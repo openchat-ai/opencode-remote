@@ -1,5 +1,5 @@
 // Approval workflow for OpenCode Remote Control
-import { loadConfig } from './types.js';
+import { loadConfig } from './config.js';
 const approvalCallbacks = new Map();
 export function createApprovalRequest(session, type, data) {
     const config = loadConfig();

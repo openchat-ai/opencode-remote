@@ -6,21 +6,31 @@
 
 | 领域 | 技术 | 说明 |
 |----|------|------|
-| **后端** | Node.js 24 + ESM | Bridge 核心，`bridge/` |
-| **API** | Express.js 4 | REST API 服务(端口 3000) |
-| **P2P** | hyperswarm 4 | DHT 网络 + 节点发现 |
-| **WebSocket** | ws 8 | 实时通信 |
-| **音频** | RNNoise WASM + ONNX Runtime | 语音降噪 + 神经编解码 |
-| **信令** | 七牛云 SDK | P2P 打洞信令 |
-| **进程守护** | PM2 5 | 生产环境进程管理 |
-| **前端** | Flutter 3.11+ (Dart) | `opencode-remote-flutter/` 客户端 |
-| **状态管理** | Riverpod 2.5 | Flutter 状态管理 |
-| **持久化** | Hive | Flutter 本地存储 |
-| **WebRTC** | flutter_webrtc | 实时音视频 |
+| **后端** | Node.js 24 + ESM | Bridge 核心，`dist/` |
+| **API** | OpenCode SDK (`@opencode-ai/sdk`) | OpenCode CLI 控制 |
+| **微信 Bot** | iLink 协议 (`@tencent-weixin/openclaw-weixin`) | 微信消息收发 |
+| **飞书 Bot** | 飞书 SDK (`@larksuiteoapi/node-sdk`) | 飞书 WebSocket 长连接 |
+| **Telegram Bot** | grammy | Telegram long-polling |
+| **文件存储** | 七牛云 (S3 兼容) | 微信上传构建产物 |
+| **进程管理** | 父子进程 spawn | 自动重启 + PM2 兼容 |
 
 ## 关键命令
 
+| 命令 | 说明 |
+|------|------|
+| `npm run lint` | 两阶段检查：Phase 1 `node --check` 语法 + Phase 2 `import()` 模块解析 |
+| `npm test` | 同 `npm run lint` |
+| `npm run precommit` | 手动触发 lint（pre-commit hook 自动调用） |
+| `node --check <file>` | 单文件语法检查 |
 
+## 开发流程
+
+**每次修改 import/export 后，必须跑 `npm run lint` 验证模块图**。两阶段检查可以捕获：
+- 语法错误（少括号、少分号）
+- 导出名不存在（`does not provide an export`）
+- 模块路径错误（`ERR_MODULE_NOT_FOUND`）
+
+pre-commit hook 在 `git commit` 前自动执行 lint，lint 失败阻止提交。
 
 ## 代码规范
 
@@ -95,7 +105,7 @@
 
 ### 四项基本原则（硬约束）
 
-1. **一次性做好，不重复返工** — 同一个模块的同类问题最多修两轮。同类问题按功能特性标签归类（如"居民推理质量"），而非文件目录。第三轮如果还在提同类问题，说明方案不对，不是没修到位。此时技术经理必须输出的是"换方案"而不是"继续修"。触发"换方案"需≥2/3 专家投票确认旧方案不可行。第三轮技术经理的 15 条中必须包含"换方案"选项。
+1. **一次性做好，不重复返工** — 同一个模块的同类问题最多修两轮。同类问题按功能特性标签归类（如"消息处理质量"），而非文件目录。第三轮如果还在提同类问题，说明方案不对，不是没修到位。此时技术经理必须输出的是"换方案"而不是"继续修"。触发"换方案"需≥2/3 专家投票确认旧方案不可行。第三轮技术经理的 15 条中必须包含"换方案"选项。
 
 2. **以用户价值为导向** — P0 排序规则：
    - 第一优先级：用户能不能跑起来（onboarding 是否 5 分钟、CLI 是否可交互、核心功能是否可 demo）
@@ -115,9 +125,9 @@
    **目标是每 3 轮出一个可交付版本，而不是永远打磨。**
    **可交付版本验收标准**（全部满足才算"可交付"）：
    - CI 全绿（lint + test + build）
-   - Docker 镜像可拉取
+   - Docker 镜像可拉取（可选）
    - PM2 进程守护正常
-   - 至少一个端到端用户场景可稳定跑通（P2P 语音或 AI 居民对话）
+   - 至少一个端到端用户场景可稳定跑通（微信或飞书发送消息→OpenCode 响应）
    - 新人 10 分钟内可完成一次完整体验
    - 无 P0 级安全漏洞
    **硬性版号**：R3 / R6 / R9 / R12 轮技术经理必须宣布版号（如 v0.1.0）。答不上来则本轮不得结束。
