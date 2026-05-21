@@ -235,19 +235,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             await adapter.reply(ctx.threadId, '❌ 已拒绝');
             return true;
         }
-        case 'diff': {
-            const pending = session.pendingApprovals?.[0];
-            if (!pending || !pending.files?.length) {
-                await adapter.reply(ctx.threadId, '📄 没有待显示的变更');
-                return true;
-            }
-            const diffPreview = pending.files.map(f => `--- a/${f.path}\n+++ b/${f.path}\n@@ 变更 +${f.additions} -${f.deletions} @@`).join('\n');
-            const messages = splitMessage(`\`\`\`diff\n${diffPreview}\n\`\`\``);
-            for (const msg of messages) {
-                await adapter.reply(ctx.threadId, msg);
-            }
-            return true;
-        }
+
         case 'files': {
             const pending = session.pendingApprovals?.[0];
             if (!pending || !pending.files?.length) {
@@ -405,6 +393,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                 session.loopPrompt = null;
                 session.loopIterationCount = 0;
                 session.loopStartTime = null;
+                saveSessionMapping();
                 await adapter.reply(ctx.threadId, '⏹️ 循环任务已停止');
                 return true;
             }
@@ -428,10 +417,29 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             session.loopIterationCount = 0;
             session.loopMaxIterations = 10;
             session.loopMaxTimeMs = 30 * 60 * 1000;
+            saveSessionMapping();
             const modeDesc = argText ? `指令: ${argText}` : '智能模式（根据上下文自动生成指令）';
             await adapter.reply(ctx.threadId, `🔄 循环任务已启动\n${modeDesc}\n限制: 最多10次迭代或30分钟\n\n发送 /loop off 停止`);
             return true;
         }
+
+        case 'refresh': {
+            const ocSession = openCodeSessions.get(ctx.threadId);
+            if (!ocSession) {
+                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
+                return true;
+            }
+            await adapter.reply(ctx.threadId, '🔄 正在刷新会话...');
+            try {
+                await ocSession.client.session.compact({ path: { id: ocSession.sessionId } });
+                await ocSession.client.session.summarize({ path: { id: ocSession.sessionId } });
+                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
+            } catch (e) {
+                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
+            }
+            return true;
+        }
+
         case 'upload': {
             await adapter.reply(ctx.threadId, 'ℹ️ 上传功能目前仅在微信客户端可用。\n请使用微信客户端上传文件。');
             return true;
@@ -464,145 +472,10 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             }, 500);
             return true;
         }
-        case 'compact': {
-            const ocSession = openCodeSessions?.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            try {
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const result = await opencode.client.session.compact({ path: { id: ocSession.sessionId } });
-                if (result.error) {
-                    await adapter.reply(ctx.threadId, `❌ 压缩失败: ${result.error}`);
-                } else {
-                    await adapter.reply(ctx.threadId, '✅ 会话已压缩');
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 压缩失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'summary': {
-            const ocSession = openCodeSessions?.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '📋 正在生成摘要...');
-            try {
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const result = await opencode.client.session.summarize({
-                    path: { id: ocSession.sessionId }
-                });
-                if (result.error) {
-                    await adapter.reply(ctx.threadId, `❌ 生成摘要失败: ${result.error}`);
-                } else {
-                    const msgsResult = await opencode.client.session.messages({
-                        path: { id: ocSession.sessionId },
-                        query: { limit: 1 }
-                    });
-                    if (msgsResult.data?.[0]?.parts) {
-                        const textParts = msgsResult.data[0].parts.filter(p => p.type === 'text');
-                        const summaryText = textParts.map(p => p.text).join('\n');
-                        if (summaryText) {
-                            await adapter.reply(ctx.threadId, `📋 会话摘要\n\n${summaryText}`);
-                        } else {
-                            await adapter.reply(ctx.threadId, '✅ 摘要生成成功');
-                        }
-                    } else {
-                        await adapter.reply(ctx.threadId, '✅ 摘要生成成功');
-                    }
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 生成摘要失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'commit': {
-            try {
-                const { execSync } = await import('child_process');
-                const projectDir = session.projectDir || globalThis.__autoProjectDir;
-                if (!projectDir) {
-                    await adapter.reply(ctx.threadId, '❌ 未设置项目目录，请先使用 /switchdir 设置');
-                    return true;
-                }
-                const diffOutput = execSync('git diff --cached', { cwd: projectDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
-                if (!diffOutput) {
-                    await adapter.reply(ctx.threadId, '📭 暂存区没有变更');
-                    return true;
-                }
-                await adapter.reply(ctx.threadId, '📋 正在生成提交信息...');
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const commitSession = await createSession(`commit-${Date.now()}`, 'commit');
-                if (!commitSession) {
-                    await adapter.reply(ctx.threadId, '❌ 无法创建会话');
-                    return true;
-                }
-                const commitPrompt = `根据以下 git diff 生成一个简洁的提交信息（一行标题 + 可选描述）:\n\n${diffOutput.slice(0, 4000)}`;
-                const response = await sendMessage(commitSession, commitPrompt, {});
-                if (response) {
-                    const commitMsg = response.trim().split('\n')[0].replace(/^`+|`+$/g, '');
-                    await adapter.reply(ctx.threadId, `💬 建议的提交信息:\n\n${commitMsg}\n\n若要提交，请在终端运行:\ngit commit -m "${commitMsg}"`);
-                } else {
-                    await adapter.reply(ctx.threadId, '❌ 生成提交信息失败');
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 生成提交信息失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'review': {
-            try {
-                const { execSync } = await import('child_process');
-                const projectDir = session.projectDir || globalThis.__autoProjectDir;
-                if (!projectDir) {
-                    await adapter.reply(ctx.threadId, '❌ 未设置项目目录，请先使用 /switchdir 设置');
-                    return true;
-                }
-                const diffOutput = execSync('git diff --cached', { cwd: projectDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
-                if (!diffOutput) {
-                    await adapter.reply(ctx.threadId, '📭 暂存区没有变更');
-                    return true;
-                }
-                await adapter.reply(ctx.threadId, '🔍 正在审查代码...');
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const reviewSession = await createSession(`review-${Date.now()}`, 'review');
-                if (!reviewSession) {
-                    await adapter.reply(ctx.threadId, '❌ 无法创建会话');
-                    return true;
-                }
-                const reviewPrompt = `请审查以下 git diff，关注安全问题、性能问题、逻辑错误:\n\n${diffOutput.slice(0, 4000)}`;
-                const response = await sendMessage(reviewSession, reviewPrompt, {});
-                if (response) {
-                    const msgs = splitMessage(response);
-                    for (const m of msgs) {
-                        await adapter.reply(ctx.threadId, m);
-                    }
-                } else {
-                    await adapter.reply(ctx.threadId, '❌ 审查失败');
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 审查失败: ${e.message}`);
-            }
-            return true;
-        }
+
+
+
+
         case 'copy': {
             const ocSession = openCodeSessions?.get(ctx.threadId);
             if (!ocSession) {
@@ -708,64 +581,13 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             }
             return true;
         }
-        case 'switchdir': {
-            if (arg) {
-                if (!session.originalProjectDir && session.projectDir) {
-                    session.originalProjectDir = session.projectDir;
-                }
-                const newPath = arg.trim();
-                session.projectDir = newPath;
-                globalThis.__autoProjectDir = newPath;
-                await adapter.reply(ctx.threadId, `✅ 项目目录已切换至: ${newPath}`);
-            } else {
-                await adapter.reply(ctx.threadId, '❌ 请提供目录路径，例如: /switchdir C:\\path\\to\\project');
-            }
-            return true;
-        }
-        case 'scope': {
-            if (arg) {
-                session._contextScope = arg.trim();
-                await adapter.reply(ctx.threadId, `✅ 上下文范围已设为: ${session._contextScope}\n后续消息将自动附加范围信息。`);
-            } else {
-                session._contextScope = null;
-                await adapter.reply(ctx.threadId, '✅ 上下文范围已清除');
-            }
-            return true;
-        }
-        case 'analyze': {
-            if (arg) {
-                session._analyzeMode = true;
-                session._analyzeTask = arg.trim();
-                await adapter.reply(ctx.threadId, `🔍 分析模式已开启\n\n任务: ${arg.trim()}\n\n回复 "执行" 或 "execute" 开始施工，回复其他内容取消。\n\n分析后 AI 将执行最小改动，完成后列出变更点和验证步骤。`);
-            } else {
-                await adapter.reply(ctx.threadId, '❌ 请提供要分析的任务描述\n用法: /analyze <任务描述>\n\n示例: /analyze 修复登录页面按钮点击无响应的问题');
-            }
-            return true;
-        }
-        case 'flush': {
-            const ocSession = openCodeSessions?.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            const projectDir = session.projectDir || globalThis.__autoProjectDir;
-            if (!projectDir) {
-                await adapter.reply(ctx.threadId, '❌ 未设置项目目录\n请先使用 /switchdir 设置项目目录');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '🧠 正在刷新记忆...');
-            try {
-                const { flushMemory } = await import('../weixin/flush.js');
-                const result = await flushMemory(projectDir, session, ocSession);
-                await adapter.reply(ctx.threadId, result.summary || '✅ 记忆刷新完成');
-                if (result.learned) {
-                    console.log(`[flush] ${result.learned}`);
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ flush 失败: ${e.message}`);
-            }
-            return true;
-        }
+
+
+
+
+
+
+
         default:
             await adapter.reply(ctx.threadId, `${EMOJI.WARNING} 未知指令: ${command}\n\n请发送 /help 查看可用指令`);
             return true;

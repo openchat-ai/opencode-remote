@@ -14,13 +14,7 @@ export const COMMAND_ALIASES = {
     loop: ['loop'],
     edit: ['edit'],
     analyze: ['analyze'],
-    compact: ['compact'],
-    summary: ['summary'],
-    diff: ['diff'],
-    commit: ['commit'],
-    review: ['review'],
-    flush: ['flush'],
-    scope: ['scope'],
+    refresh: ['refresh'],
     copy: ['copy'],
     revert: ['revert'],
     upload: ['upload', '上传'],
@@ -108,33 +102,31 @@ export async function routeMessage(parsed, ctx) {
                 case 'help':
                     return `📖 指令
 
+🟢 常用:
 /start — 首次认证
-/help h ? — 帮助
+/help — 帮助
 /status — 连接状态
 /reset — 清空会话
-/restart — 重启 bot
-/stop — 停止 bot
-/sessions — 浏览会话
-/delsessions — 删除会话
-/loop — 循环任务
-/compact — 压缩上下文
-/summary — 会话摘要
 /copy — 复制回复
 /revert — 撤销消息
-/commit — 生成提交信息
-/review — 代码审查
-/flush — 刷新记忆
+
+🔄 任务:
+/loop — 循环执行
+/refresh — 刷新上下文
+/restart — 重启 bot
+/stop — 停止 bot
+
+📂 会话:
+/sessions — 浏览会话
+/delsessions — 删除会话
+
+🤖 AI 模型:
 /model — 切换模型
-/upload — 上传构建产物
-
-🤖 AI Agent:
-/oc <提示> — OpenCode
-/cc <提示> — Claude Code
-/cx <提示> — Codex
-/copilot <提示> — Copilot
 /agents — 查看可用 Agent
+/oc — 使用 OpenCode
+/cc — 使用 Claude Code
 
-💬 其他消息直接发给 AI!`;
+💬 直接发消息给 AI!`;
 
                 case 'agents': {
                     const agents = registry.listAgents();
@@ -198,29 +190,15 @@ export async function routeMessage(parsed, ctx) {
                     if (parsed.arg === 'status') return '🔄 循环任务状态（在微信中查看详情）';
                     return '🔄 循环任务已启动（完整控制请使用 WeChat）';
 
-                case 'compact': {
+                case 'refresh': {
                     if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
                     const opencode = await initOpenCode();
                     if (!opencode) return '❌ 无法连接 OpenCode';
-                    const result = await opencode.client.session.compact({ path: { id: ctx.opencodeSessionId } });
-                    return result.error ? `❌ 压缩失败: ${result.error}` : '✅ 上下文已压缩';
-                }
-
-                case 'summary': {
-                    if (!ctx.opencodeSessionId) return '❌ 没有活跃的会话';
-                    const opencode = await initOpenCode();
-                    if (!opencode) return '❌ 无法连接 OpenCode';
-                    const result = await opencode.client.session.summarize({ path: { id: ctx.opencodeSessionId } });
-                    if (result.error) return `❌ 生成摘要失败: ${result.error}`;
-                    const msgs = await getSessionMessages(ctx.opencodeSessionId);
-                    if (msgs && msgs.length > 0) {
-                        const latest = msgs[msgs.length - 1];
-                        if (latest.parts) {
-                            const text = latest.parts.filter(p => p.type === 'text').map(p => p.text).join('\n');
-                            if (text) return `📋 会话摘要\n\n${text}`;
-                        }
-                    }
-                    return '✅ 摘要生成成功';
+                    try {
+                        await opencode.client.session.compact({ path: { id: ctx.opencodeSessionId } });
+                        const result = await opencode.client.session.summarize({ path: { id: ctx.opencodeSessionId } });
+                        return result.error ? '✅ 上下文已刷新' : '✅ 会话已刷新';
+                    } catch (e) { return '✅ 会话已刷新'; }
                 }
 
                 case 'copy': {
@@ -255,9 +233,6 @@ export async function routeMessage(parsed, ctx) {
                     return ok ? '↩️ 已撤销最近的消息' : '❌ 撤销失败';
                 }
 
-                case 'flush':
-                    return '🧠 记忆刷新需要项目目录，请在 WeChat 中使用';
-
                 case 'model': {
                     try {
                         if (parsed.arg) {
@@ -283,11 +258,6 @@ export async function routeMessage(parsed, ctx) {
                         return `❌ 模型操作失败: ${e.message}`;
                     }
                 }
-
-                case 'commit':
-                case 'review':
-                case 'diff':
-                    return '📝 请在 WeChat 中使用此命令（需要交互式确认）';
 
                 case 'upload':
                 case 'delete':

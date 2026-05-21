@@ -5,6 +5,7 @@ import { initOpenCode, checkConnection, abortSession, resumeSession, revertSessi
 import { claimOwnership } from '../core/auth.js';
 import { registry } from '../core/registry.js';
 import { uploadToQiniu, findBuildOutputs, formatSize, deleteFromQiniu } from './qiniu-upload.js';
+import { initMemorySystem } from './init-memory.js';
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
 
@@ -223,23 +224,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                     return true;
                 }
 
-                case 'switchdir': {
-                    if (arg) {
-                        if (!session.originalProjectDir && session.projectDir) {
-                            session.originalProjectDir = session.projectDir;
-                        }
-                        
-                        const newPath = arg;
-                        session.projectDir = newPath;
-                        
-                        await adapter.reply(ctx.threadId, `✅ 项目目录已切换到: ${newPath}\n当前会话已更新。`);
-                        return true;
-                    } else {
-                        await adapter.reply(ctx.threadId, `❌ 请提供目录路径，例如: /switchdir C:\\path\\to\\project`);
-                        return true;
-                    }
-                }
-                
+
                 case 'copy': {
             const ocSession = openCodeSessions.get(ctx.threadId);
             if (!ocSession) {
@@ -302,37 +287,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             await adapter.reply(ctx.threadId, `📋 已复制最新 AI 回复内容:\n\n${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}`);
             return true;
         }
-        case 'summary': {
-            const ocSession = openCodeSessions.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '📋 正在生成摘要...');
-            const result = await ocSession.client.session.summarize({
-                path: { id: ocSession.sessionId }
-            });
-            if (result.error) {
-                await adapter.reply(ctx.threadId, `❌ 生成摘要失败: ${result.error}`);
-            } else {
-                const msgsResult = await ocSession.client.session.messages({ 
-                    path: { id: ocSession.sessionId },
-                    query: { limit: 1 }
-                });
-                if (msgsResult.data?.[0]?.parts) {
-                    const textParts = msgsResult.data[0].parts.filter(p => p.type === 'text');
-                    const summaryText = textParts.map(p => p.text).join('\n');
-                    if (summaryText) {
-                        await adapter.reply(ctx.threadId, `📋 会话摘要\n\n${summaryText}`);
-                    } else {
-                        await adapter.reply(ctx.threadId, '✅ 摘要生成成功，但没有可显示的内容');
-                    }
-                } else {
-                    await adapter.reply(ctx.threadId, '✅ 摘要生成成功');
-                }
-            }
-            return true;
-        }
+
         case 'resume': {
             try {
                 const opencode = await initOpenCode();
@@ -489,6 +444,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                 session.loopPrompt = null;
                 session.loopIterationCount = 0;
                 session.loopStartTime = null;
+                saveSessionMapping();
                 await adapter.reply(ctx.threadId, '⏹️ 循环任务已停止');
                 return true;
             }
@@ -512,6 +468,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             session.loopIterationCount = 0;
             session.loopMaxIterations = 10;
             session.loopMaxTimeMs = 30 * 60 * 1000;
+            saveSessionMapping();
             const modeDesc = argText ? `指令: ${argText}` : '智能模式（根据上下文自动生成指令）';
             await adapter.reply(ctx.threadId, `🔄 循环任务已启动\n${modeDesc}\n限制: 最多10次迭代或30分钟\n\n发送 /loop off 停止`);
             if (_startLoopCycle) {
@@ -664,6 +621,23 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
 
+        case 'refresh': {
+            const ocSession = openCodeSessions.get(ctx.threadId);
+            if (!ocSession) {
+                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
+                return true;
+            }
+            await adapter.reply(ctx.threadId, '🔄 正在刷新会话...');
+            try {
+                await ocSession.client.session.compact({ path: { id: ocSession.sessionId } });
+                await ocSession.client.session.summarize({ path: { id: ocSession.sessionId } });
+                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
+            } catch (e) {
+                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
+            }
+            return true;
+        }
+
         case 'delete': {
             const keyToDelete = arg ? arg.trim() : null;
 
@@ -764,6 +738,8 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             }
             return true;
         }
+
+
 
         default:
             return false;

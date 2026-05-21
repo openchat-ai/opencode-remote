@@ -7,13 +7,13 @@ describe('core/router.js', () => {
   it('COMMAND_ALIASES contains all expected commands', async () => {
     const { COMMAND_ALIASES } = await import(mod);
     const expected = ['start', 'help', 'status', 'reset', 'stop', 'restart',
-      'sessions', 'delsessions', 'loop', 'edit', 'analyze', 'compact',
-      'summary', 'diff', 'commit', 'review', 'flush', 'scope', 'copy',
-      'revert', 'upload', 'delete', 'oc', 'cc', 'cx', 'copilot', 'agents', 'model'];
+      'sessions', 'delsessions', 'loop', 'edit',
+      'refresh', 'copy', 'revert', 'upload', 'delete',
+      'oc', 'cc', 'cx', 'copilot', 'agents', 'model'];
     for (const cmd of expected) {
       assert.ok(COMMAND_ALIASES[cmd], `Missing command: ${cmd}`);
     }
-    assert.equal(Object.keys(COMMAND_ALIASES).length, 28);
+    assert.equal(Object.keys(COMMAND_ALIASES).length, 22);
   });
 
   it('detectCommand parses / prefixed commands', async () => {
