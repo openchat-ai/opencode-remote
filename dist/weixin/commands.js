@@ -94,27 +94,32 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         case 'help':
             await adapter.reply(ctx.threadId, `📖 指令
 
+🟢 常用:
 /start — 首次认证
-/help h ? — 帮助
+/help — 帮助
 /status — 查看状态
 /reset — 重置会话
-/restart — 重启 bot
-/stop — 中断任务
+/copy — 复制回复
+/revert — 撤销消息
 
-🤖 AI Agent:
+🔄 任务:
+/loop — 循环执行
+/refresh — 刷新上下文
+/restart — 重启 bot
+/stop — 停止 bot
+
+📂 会话:
+/sessions — 浏览会话
+/delsessions — 删除会话
+
+🤖 AI 模型:
+/model — 切换模型
+/agents — 查看可用 Agent
 /oc — 使用 OpenCode
 /cc — 使用 Claude Code
-/cx — 使用 Codex
-/copilot — 使用 Copilot
-/agents — 查看可用 Agent
 
-🧠 模型:
-/model — 查看当前模型
-/model <provider/model> — 切换模型
-
-⬆️ 上传:
-/upload — 上传安装包
-/delete <key> — 删除文件
+⬆️ 文件:
+/upload — 上传构建产物
 
 💬 直接发消息给 AI!`);
             return true;

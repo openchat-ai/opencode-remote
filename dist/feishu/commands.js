@@ -103,22 +103,13 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
 /review — 代码审查
 /flush — 刷新记忆
 
-🤖 AI Agent:
-/oc <提示> — 使用 OpenCode
-/cc <提示> — 使用 Claude Code
-/cx <提示> — 使用 Codex
-/copilot <提示> — 使用 Copilot
+🤖 AI 模型:
+/model — 切换模型
 /agents — 查看可用 Agent
+/oc — 使用 OpenCode
+/cc — 使用 Claude Code
 
-🧠 模型:
-/model — 查看当前模型
-/model <provider/model> — 切换模型
-
-⬆️ 上传（仅微信可用）:
-/upload — 上传安装包
-/delete <key> — 删除文件
-
-💬 其他消息直接发送给 OpenCode！`);
+💬 直接发消息给 AI!`);
             return true;
         case 'agents': {
             const agents = registry.listAgents();
