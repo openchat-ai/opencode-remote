@@ -37,29 +37,32 @@ opencode-remote telegram
 | `/status` | 查看状态 | ✅ | ✅ | ✅ |
 | `/reset` | 重置会话 | ✅ | ✅ | ✅ |
 | `/restart` | 重启 Bot | ✅ | ✅ | ✅ |
-| `/stop` | 停止 Bot | ✅ | ✅ | ❌ |
-| `/sessions` | 浏览会话 | ✅ | ✅ | ❌ |
-| `/delsessions` | 删除会话 | ✅ | ✅ | ❌ |
-| `/loop` | 循环任务 | ✅ | ✅ | ❌ |
-| `/edit` | 编辑消息 | ✅ | ❌ | ❌ |
-| `/upload` | 上传构建产物 | ✅ | ❌ | ❌ |
-| `/compact` | 压缩上下文 | ✅ | ✅ | ❌ |
-| `/summary` | 会话摘要 | ✅ | ✅ | ❌ |
-| `/commit` | 生成提交信息 | ✅ | ✅ | ❌ |
-| `/review` | 代码审查 | ✅ | ✅ | ❌ |
-| `/copy` | 复制回复 | ✅ | ✅ | ❌ |
-| `/revert` | 撤销消息 | ✅ | ✅ | ❌ |
-| `/flush` | 刷新记忆 | ✅ | ✅ | ❌ |
-| `/scope` | 限定范围 | ✅ | ❌ | ❌ |
-| `/analyze` | 先分析后执行 | ✅ | ❌ | ❌ |
+| `/stop` | 停止 Bot | ✅ | ✅ | ✅ |
+| `/sessions` | 浏览会话 | ✅ | ✅ | ✅ |
+| `/delsessions` | 删除会话 | ✅ | ✅ | ✅ |
+| `/loop` | 循环任务 | ✅ | ✅ | ✅ |
+| `/refresh` | 刷新上下文 | ✅ | ✅ | ✅ |
+| `/copy` | 复制回复 | ✅ | ✅ | ✅ |
+| `/revert` | 撤销消息 | ✅ | ✅ | ✅ |
 | `/model` | 切换 AI 模型 | ✅ | ✅ | ✅ |
 | `/agents` | 查看 Agent | ✅ | ✅ | ✅ |
 | `/oc` | 使用 OpenCode | ✅ | ✅ | ✅ |
 | `/cc` | 使用 Claude Code | ✅ | ✅ | ✅ |
-| `/cx` | 使用 Codex | ✅ | ✅ | ✅ |
-| `/copilot` | 使用 Copilot | ✅ | ✅ | ✅ |
 
-> ✅ 可用 &nbsp; ❌ 未实现
+> ✅ 可用 &nbsp; ❌ 未实现（微信需要 iLink 平台账号）
+
+## 快速使用
+
+```bash
+# Telegram（最快，5分钟）
+opencode-remote telegram
+
+# 微信
+opencode-remote weixin
+
+# 飞书（需要企业版飞书账号）
+opencode-remote feishu
+```
 
 ## 配置说明
 

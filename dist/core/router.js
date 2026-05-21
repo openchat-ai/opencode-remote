@@ -13,12 +13,10 @@ export const COMMAND_ALIASES = {
     delsessions: ['delsessions', 'del'],
     loop: ['loop'],
     edit: ['edit'],
-    analyze: ['analyze'],
     refresh: ['refresh'],
     copy: ['copy'],
     revert: ['revert'],
-    upload: ['upload', '上传'],
-    delete: ['delete', '删除'],
+    upload: ['upload'],
     oc: ['oc'],
     cc: ['cc'],
     cx: ['cx'],
@@ -197,8 +195,11 @@ export async function routeMessage(parsed, ctx) {
                     try {
                         await opencode.client.session.compact({ path: { id: ctx.opencodeSessionId } });
                         const result = await opencode.client.session.summarize({ path: { id: ctx.opencodeSessionId } });
-                        return result.error ? '✅ 上下文已刷新' : '✅ 会话已刷新';
-                    } catch (e) { return '✅ 会话已刷新'; }
+                        return result.error ? '⚠️ 压缩完成，但摘要生成失败' : '✅ 会话已刷新';
+                    } catch (e) {
+                        console.error('[refresh] Error:', e.message);
+                        return `❌ 刷新失败: ${e.message}`;
+                    }
                 }
 
                 case 'copy': {
@@ -260,13 +261,8 @@ export async function routeMessage(parsed, ctx) {
                 }
 
                 case 'upload':
-                case 'delete':
-                    return '⬆️ 上传功能仅在 WeChat 中可用（已对接七牛云）';
-
                 case 'edit':
-                case 'analyze':
-                case 'scope':
-                    return '✏️ 此命令需要多轮交互，请在 WeChat 中使用';
+                    return '❌ 当前平台不支持此命令';
 
                 default:
                     return '❓ 未知指令';
