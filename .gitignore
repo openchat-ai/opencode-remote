@@ -11,5 +11,5 @@ Thumbs.db
 **/test*.js
 **/APIKEY*.md
 
-# 忽略 dist 目录中的 .git 子仓库，防止被误认为子模块
-dist/.git/
+# dist 已移除嵌套 .git，纳入主仓库管理
+dist/node_modules/

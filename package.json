@@ -1,5 +1,5 @@
 {
-  "name": "openchat",
+  "name": "opencode-remote",
   "version": "0.13.0",
   "description": "Control OpenCode from anywhere via Telegram, Feishu, or WeChat",
   "type": "module",
@@ -14,8 +14,10 @@
     "dev:telegram": "node dist/cli.js telegram",
     "dev:feishu": "node dist/cli.js feishu",
     "start": "node dist/index.js",
-    "test": "echo \"No tests configured\" && exit 0",
-    "prepublishOnly": "echo \"No build required\""
+    "lint": "node scripts/check-syntax.mjs",
+    "test": "npm run lint",
+    "precommit": "npm run lint",
+    "prepublishOnly": "npm run lint"
   },
   "files": [
     "dist"
@@ -25,15 +27,15 @@
     "@opencode-ai/sdk": "^1.2.27",
     "express": "^5.2.1",
     "grammy": "^1.30.0",
+    "qiniu": "^7.15.2",
     "undici": "^7.24.5"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/你的用户名/openchat.git"
+    "url": "https://github.com/opencode-remote/opencode-remote.git"
   },
   "keywords": [
     "opencode",
@@ -49,6 +51,6 @@
   "license": "MIT",
   "funding": {
     "type": "opencollective",
-    "url": "https://opencollective.com/openchat"
+    "url": "https://opencollective.com/opencode-remote"
   }
 }
