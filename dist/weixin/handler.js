@@ -5,7 +5,7 @@ import { isAuthorized, hasOwner } from '../core/auth.js';
 import { registry } from '../core/registry.js';
 import { sendMessage as sendWeixinMessage } from './api.js';
 import { randomBytes } from 'crypto';
-import { detectCommand, EXPERT_SYSTEM_PROMPT } from '../core/router.js';
+import { detectCommand, EXPERT_SYSTEM_PROMPT, startTypingPing } from '../core/router.js';
 import { handleCommand, formatTimeAgo, _registerStartLoopCycle } from './commands.js';
 
 async function startLoopCycle(adapter, ctx, openCodeSessions, session) {
@@ -53,109 +53,82 @@ _registerStartLoopCycle(startLoopCycle);
 
 async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, expertPrompt) {
     adapter.sendTypingIndicator(ctx.threadId).catch(() => {});
-    let openCodeSession = openCodeSessions.get(ctx.threadId);
-    if (!openCodeSession) {
-        if (session.opencodeSessionId) {
-            openCodeSession = await resumeSession(session.opencodeSessionId);
-        }
-        if (!openCodeSession && globalThis.__latestOpenCodeSession?.id) {
-            console.log('Connecting to latest OpenCode session...');
-            openCodeSession = await resumeSession(globalThis.__latestOpenCodeSession.id);
-        }
+    let openCodeSession = null;
+
+    // 专家评审每次开独立会话，避免旧历史干扰
+    if (expertPrompt) {
+        openCodeSession = await createSession(`expert-${Date.now()}`, `专家评审 ${Date.now()}`);
         if (!openCodeSession) {
-            const mapping = loadSessionMapping();
-            const saved = mapping[ctx.threadId];
-            if (saved?.opencodeSessionId) {
-                openCodeSession = await resumeSession(saved.opencodeSessionId);
-            }
+            await adapter.reply(ctx.threadId, '❌ 无法创建评审会话');
+            return;
         }
+        console.log(`✅ 新建评审会话: ${openCodeSession.sessionId.slice(0, 8)}`);
+    } else {
+        openCodeSession = openCodeSessions.get(ctx.threadId);
         if (!openCodeSession) {
-            console.log('Creating new WeChat session...');
-            openCodeSession = await createSession(ctx.threadId, `Weixin ${ctx.threadId}`);
+            if (session.opencodeSessionId) openCodeSession = await resumeSession(session.opencodeSessionId);
+            if (!openCodeSession && globalThis.__latestOpenCodeSession?.id) openCodeSession = await resumeSession(globalThis.__latestOpenCodeSession.id);
             if (!openCodeSession) {
-                await adapter.reply(ctx.threadId, '❌ 无法创建 OpenCode 会话');
-                return;
+                const mapping = loadSessionMapping();
+                if (mapping[ctx.threadId]?.opencodeSessionId) openCodeSession = await resumeSession(mapping[ctx.threadId].opencodeSessionId);
             }
-            console.log(`✅ Created new WeChat session: ${openCodeSession.sessionId}`);
+            if (!openCodeSession) {
+                openCodeSession = await createSession(ctx.threadId, `Weixin ${ctx.threadId}`);
+                if (!openCodeSession) { await adapter.reply(ctx.threadId, '❌ 无法创建 OpenCode 会话'); return; }
+            }
+            openCodeSessions.set(ctx.threadId, openCodeSession);
+            session.opencodeSessionId = openCodeSession.sessionId;
+            saveSessionMapping();
         }
-        openCodeSessions.set(ctx.threadId, openCodeSession);
-        session.opencodeSessionId = openCodeSession.sessionId;
-        const key = `weixin:${ctx.threadId}:${ctx.threadId}`;
-        sessionManager.saveSession(key, session).catch(() => {});
-        saveSessionMapping();
     }
 
-    if (session.modelOverride) {
-        openCodeSession.model = session.modelOverride;
-    }
+    if (session.modelOverride) openCodeSession.model = session.modelOverride;
 
     session.taskStartTime = Date.now();
     session.currentTool = null;
-    
-    let lastToolNotified = '';
     const stopHeartbeat = () => {
-        session.taskStartTime = null;
-        session.currentTool = null;
-        if (session.modifiedFiles instanceof Set) {
-            session.modifiedFiles = Array.from(session.modifiedFiles);
-        }
+        session.taskStartTime = null; session.currentTool = null;
+        if (session.modifiedFiles instanceof Set) session.modifiedFiles = Array.from(session.modifiedFiles);
     };
     
     console.log(`📤 Message sent: → ${text}`);
-
     const projectDir = session.projectDir || globalThis.__autoProjectDir;
 
     let scopedText = text;
-    if (session._contextScope) {
-        scopedText = `[上下文范围: ${session._contextScope}]\n\n${text}`;
-    }
-
-    if (projectDir && !scopedText.includes('项目目录')) {
-        scopedText = `[当前项目目录: ${projectDir}]\n\n${scopedText}`;
-    }
-
-    if (expertPrompt) {
-        scopedText = `${expertPrompt}\n\n${scopedText}`;
-    }
+    if (session._contextScope) scopedText = `[上下文范围: ${session._contextScope}]\n\n${text}`;
+    if (projectDir && !scopedText.includes('项目目录')) scopedText = `[当前项目目录: ${projectDir}]\n\n${scopedText}`;
+    if (expertPrompt) scopedText = `${expertPrompt}\n\n${scopedText}`;
 
     let hasToolActivity = false;
     let toolCount = 0;
-    let lastProgress = Date.now();
 
-    adapter.sendTypingIndicator(ctx.threadId).catch(() => {});
-    const startTime = Date.now();
-    let lastStdoutReported = '';
-    const progressTimer = setInterval(() => {
-        const elapsed = Math.round((Date.now() - startTime) / 1000);
-        if (lastStdoutReported) {
-            const snippet = lastStdoutReported.length > 60 ? lastStdoutReported.slice(0, 60) + '...' : lastStdoutReported;
-            adapter.reply(ctx.threadId, `📡 ${snippet}`).catch(() => {});
-        } else {
-            adapter.reply(ctx.threadId, `⏳ ${elapsed}s`).catch(() => {});
-        }
-    }, 8000);
+    const typingPing = startTypingPing(adapter, ctx.threadId);
 
+    const replyWithTyping = async (text) => {
+        const snippet = text.length > 80 ? text.slice(0, 80) + '...' : text;
+        console.log(`[→发送] ${snippet}`);
+        try { await adapter.reply(ctx.threadId, text); } catch (e) { console.error('[→发送] 失败:', e.message); }
+        adapter.sendTypingIndicator(ctx.threadId).catch(() => {});
+    };
+
+    let contentSent = false;
     const result = await sendToOpenCode(openCodeSession, scopedText, {
         idleThreshold: expertPrompt ? 30 : 10,
-        onStdout: (line) => {
-            if (line !== lastStdoutReported) {
-                lastStdoutReported = line;
-            }
+        onNewContent: (delta) => {
+            const trimmed = delta.trim();
+            if (trimmed) { replyWithTyping(trimmed); typingPing.poke(); contentSent = true; }
         },
         onEvent: (event) => {
             if (event.type === 'tool.call') {
                 const props = event.properties || {};
                 const toolName = props.name || props.tool_name || 'unknown';
                 const input = props.input || {};
-
-                hasToolActivity = true;
-                toolCount++;
-
+                hasToolActivity = true; toolCount++;
                 let toolDesc = `🔧 ${toolName}`;
                 if (input.path) toolDesc += ` 📁${input.path}`;
                 if (input.command) toolDesc += ` 💻${input.command}`;
-                adapter.reply(ctx.threadId, toolDesc).catch(() => {});
-
+                replyWithTyping(toolDesc);
+                typingPing.poke();
                 if (input.path) {
                     if (!session.modifiedFiles) session.modifiedFiles = new Set();
                     session.modifiedFiles.add(input.path);
@@ -164,10 +137,6 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
         },
         onStatusChange: (status) => {
             if (status.hasToolActivity) hasToolActivity = true;
-            if (toolCount > 0 && Date.now() - lastProgress > 15000) {
-                lastProgress = Date.now();
-                adapter.reply(ctx.threadId, `⏳ 进行中 (${toolCount} 个工具已执行)...`).catch(() => {});
-            }
         },
     }).catch((e) => {
         console.error('[forwardToOpenCode] Task error:', e.message);
@@ -175,29 +144,20 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
     });
 
     stopHeartbeat();
-    clearInterval(progressTimer);
+    typingPing.done();
 
-    const finalText = (result || '').trim();
-    if (!finalText) {
-        console.error('[forwardToOpenCode] Empty response');
-        await adapter.reply(ctx.threadId, '⏰ 请求超时或返回为空，请检查 OpenCode 是否正常运行，然后重试');
-        return;
-    }
-
-    if (finalText.startsWith('⏰') || finalText.startsWith('❌')) {
-        console.error('[forwardToOpenCode] Error response:', finalText);
-        await adapter.reply(ctx.threadId, finalText);
-        return;
-    }
-
-    const responseMsgs = splitMessage(finalText);
-    for (const m of responseMsgs) {
-        const trimmed = m.trim();
-        if (!trimmed) continue;
-        try {
-            await adapter.reply(ctx.threadId, m);
-        } catch (replyErr) {
-            console.error('[forwardToOpenCode] reply failed:', replyErr.message);
+    // onNewContent 已发过内容就不兜底了，避免重复
+    if (!contentSent) {
+        const finalText = (result || '').trim();
+        if (finalText && !finalText.startsWith('⏰') && !finalText.startsWith('❌')) {
+            const msgs = splitMessage(finalText);
+            for (const m of msgs) {
+                if (m.trim()) adapter.reply(ctx.threadId, m).catch(e => console.error('[reply] 兜底失败:', e.message));
+            }
+        } else if (finalText) {
+            adapter.reply(ctx.threadId, finalText).catch(e => console.error('[reply] 兜底失败:', e.message));
+        } else {
+            adapter.reply(ctx.threadId, '⚠️ AI 返回为空（可能是超时），请重试或 /diagnose').catch(e => console.error('[reply] 失败:', e.message));
         }
     }
 
@@ -210,7 +170,7 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
             await sendWeixinMessage({
                 baseUrl: adapter._baseUrl,
                 token: adapter._token,
-                body: { msg: { from_user_id: adapter._botId, to_user_id: otherThreadId, client_id: `${Date.now()}-${randomBytes(8).toString('hex')}`, message_type: 2, message_state: 2, context_token: otherContextToken, item_list: [{ type: 1, text_item: { text: `[来自 ${ctx.threadId} 的会话]\n\n${response}` } }] } }
+                body: { msg: { from_user_id: adapter._botId, to_user_id: otherThreadId, client_id: `${Date.now()}-${randomBytes(8).toString('hex')}`, message_type: 2, message_state: 2, context_token: otherContextToken, item_list: [{ type: 1, text_item: { text: `[来自 ${ctx.threadId} 的会话]\n\n${result || ''}` } }] } }
             });
         } catch (e) {
             console.error(`Failed to broadcast to ${otherThreadId}:`, e.message);
@@ -384,7 +344,7 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                         session.currentTool = null;
                         session.modifiedFiles = null;
                         const key = `weixin:${ctx.userId}:${ctx.threadId}`;
-                        sessionManager.saveSession(key, session).catch(() => {});
+        sessionManager.saveSession(key, session).catch(e => console.error('[session] save failed:', e.message));
                         saveSessionMapping();
                         if (target.directory) {
                             session.projectDir = target.directory;

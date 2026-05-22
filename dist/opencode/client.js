@@ -174,6 +174,7 @@ let opencodeInstance = null;
 let opencodeServer = null;
 let lastStdoutTime = 0;
 let lastStdoutLine = '';
+let lastReportedStatus = '';
 const PORTS_TO_TRY = [4096, 4097, 4098];
 
 // TCP-level port probe: true = occupied, false = free
@@ -392,13 +393,12 @@ export async function sendMessage(session, message, callbacks) {
             body: promptBody,
         });
 
-        // Poll for new response - multi-turn: continue until truly idle
+        // Poll for new response - keep going as long as new content keeps arriving
         const startTime = Date.now();
+        const FIRST_RESPONSE_TIMEOUT = callbacks?.idleThreshold > 20 ? 120000 : 60000;
         let responseText = '';
         let hasToolActivity = false;
-        let lastStatus = '';
-        let idleCycles = 0;
-        const IDLE_THRESHOLD = callbacks?.idleThreshold || 10;
+        let idleSince = 0; // 最后一次收到新内容的时间戳
 
         while (Date.now() - startTime < TIMEOUT_MS) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -408,98 +408,77 @@ export async function sendMessage(session, message, callbacks) {
                     path: { id: session.sessionId }
                 });
 
-                if (msgsResult.error) {
-                    console.error('[sendMessage] Messages error:', msgsResult.error);
-                    break;
-                }
-
-                if (!msgsResult.data?.length) {
-                    continue;
-                }
+                if (msgsResult.error) { console.error('[sendMessage] Messages error:', msgsResult.error); break; }
+                if (!msgsResult.data?.length) continue;
 
                 const messages = msgsResult.data;
-                const newMsgCount = messages.length;
 
-                // Check session status
-                const latestMsg = messages[messages.length - 1];
-                const currentStatus = latestMsg?.info?.status;
-                if (currentStatus !== lastStatus) {
-                    lastStatus = currentStatus;
-                    if (lastStatus) {
-                        console.log(`[sendMessage] Session status: ${lastStatus}`);
-                    }
-                }
-
-                // 将 OpenCode 实时日志通过回调发给用户
-                if (lastStdoutLine && Date.now() - lastStdoutTime < 5000) {
-                    callbacks?.onStdout?.(lastStdoutLine);
-                }
-
-                // Check if there was tool activity and notify via callback
-                if (newMsgCount > msgCountBefore) {
-                    for (let i = msgCountBefore; i < newMsgCount; i++) {
-                        const msg = messages[i];
-                        if (msg.parts) {
-                            for (const part of msg.parts) {
-                                if (part.type === 'tool_use' || part.type === 'tool_result') {
-                                    hasToolActivity = true;
-                                    callbacks?.onEvent?.({
-                                        type: 'tool.call',
-                                        properties: {
-                                            name: part.name || part.tool_name || 'unknown',
-                                            input: part.input || {}
-                                        }
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-                        if (hasToolActivity) break;
-                    }
-                }
-
-                // Find messages after our last message
-                let startIdx = 0;
-                if (lastMsgId) {
-                    const idx = messages.findIndex(m => m.info?.id === lastMsgId);
-                    if (idx >= 0) startIdx = idx + 1;
-                }
-
-                // Collect the latest assistant response text
-                let newText = '';
-                for (let i = messages.length - 1; i >= startIdx; i--) {
+                // 工具活动
+                for (let i = msgCountBefore; i < messages.length; i++) {
                     const msg = messages[i];
-                    if (msg.info?.role === 'assistant') {
-                        const textParts = msg.parts
-                            ?.filter(p => p.type === 'text' && p.text)
-                            .map(p => p.text) || [];
-
-                        if (textParts.length > 0) {
-                            newText = textParts.join('\n');
+                    if (msg.parts) for (const part of msg.parts) {
+                        if (part.type === 'tool_use' || part.type === 'tool_result') {
+                            hasToolActivity = true;
+                            callbacks?.onEvent?.({ type: 'tool.call', properties: { name: part.name || part.tool_name || 'unknown', input: part.input || {} } });
                             break;
                         }
                     }
+                    if (hasToolActivity) break;
                 }
 
-                if (newText && newText !== responseText) {
-                    const delta = newText.slice(responseText.length);
-                    responseText = newText;
-                    callbacks?.onTextDelta?.(delta);
-                    idleCycles = 0;
-                }
-
-                // stdout 有输出说明 OpenCode 在干活
-                if (Date.now() - lastStdoutTime < 15000) {
-                    idleCycles = 0;
-                }
-
-                // Exit when idle: have response, no new text for N cycles
-                if (responseText) {
-                    idleCycles++;
-                    // 简单对话快速返回：无工具活动且 idleThreshold 较低时，2轮即退
-                    if (idleCycles >= IDLE_THRESHOLD || (idleCycles >= 2 && !hasToolActivity && IDLE_THRESHOLD < 20)) {
-                        break;
+                // 收集所有新的 assistant 回复（累加，不丢内容）
+                if (lastMsgId) {
+                    const idx = messages.findIndex(m => m.info?.id === lastMsgId);
+                    const startIdx = idx >= 0 ? idx + 1 : 0;
+                    const newParts = [];
+                    for (let i = startIdx; i < messages.length; i++) {
+                        const msg = messages[i];
+                        if (msg.info?.role === 'assistant' && msg.parts) {
+                            for (const p of msg.parts) {
+                                if (p.type === 'text' && p.text) newParts.push(p.text);
+                            }
+                        }
                     }
+                    const fullText = newParts.join('\n');
+                    if (fullText && fullText !== responseText) {
+                        const delta = fullText.slice(responseText.length);
+                        responseText = fullText;
+                        callbacks?.onTextDelta?.(delta);
+                        callbacks?.onNewContent?.(delta);
+                        idleSince = Date.now();
+                        continue;
+                    }
+                }
+
+                // 第一条回复超时
+                if (!responseText && Date.now() - startTime > FIRST_RESPONSE_TIMEOUT) {
+                    console.warn('[sendMessage] First response timeout');
+                    const finalMsgs = await session.client.session.messages({ path: { id: session.sessionId }, query: { limit: 50 } }).catch(() => {});
+                    if (finalMsgs?.data?.length) {
+                        for (let i = finalMsgs.data.length - 1; i >= 0; i--) {
+                            const msg = finalMsgs.data[i];
+                            if (msg.info?.role === 'assistant' && msg.parts) {
+                                const parts = msg.parts.filter(p => p.type === 'text' && p.text);
+                                if (parts.length) { responseText = parts.map(p => p.text).join('\n'); break; }
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                // 检查 AI 是否还在忙（thinking/pending_tool 说明还没干完）
+                const latestStatus = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1]?.info?.status : '';
+                if (latestStatus === 'thinking' || latestStatus === 'pending_tool') {
+                    idleSince = Date.now();
+                }
+                if (latestStatus && latestStatus !== lastReportedStatus) {
+                    lastReportedStatus = latestStatus;
+                    console.log(`[AI状态] ${latestStatus}`);
+                }
+
+                // 有回复后：等 30 秒无新内容且 AI 不忙才退出
+                if (responseText && Date.now() - idleSince > 30000) {
+                    break;
                 }
             } catch (e) {
                 console.warn('Poll error:', e.message);
