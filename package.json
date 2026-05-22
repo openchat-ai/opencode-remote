@@ -1,11 +1,11 @@
 {
-  "name": "opencode-remote",
+  "name": "@yvhitxcel/opencode-remote",
   "version": "0.15.0",
-  "description": "Control OpenCode from anywhere via Telegram, Feishu, or WeChat",
+  "description": "通过微信/飞书/Telegram 远程控制 AI 编码助手（OpenCode、Claude Code、Codex、Copilot），随时随地审代码、提需求、查状态",
   "type": "module",
   "bin": {
-    "opencode-remote": "./bin/opencode-remote.js",
-    "opencode-weixin": "./bin/opencode-weixin.js"
+    "opencode-remote": "bin/opencode-remote.js",
+    "opencode-weixin": "bin/opencode-weixin.js"
   },
   "main": "./dist/index.js",
   "scripts": {
