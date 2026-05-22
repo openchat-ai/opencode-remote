@@ -7,7 +7,6 @@ export const COMMAND_ALIASES = {
     help: ['help', 'h', '?'],
     status: ['status'],
     reset: ['reset'],
-    stop: ['stop'],
     restart: ['restart'],
     sessions: ['sessions', 'sw'],
     delsessions: ['delsessions', 'del'],
@@ -28,11 +27,59 @@ export const COMMAND_ALIASES = {
     expert: ['expert', 'z', 'review'],
 };
 
+const COMMAND_HELP = {
+    start: '认领所有权',
+    help: '显示帮助',
+    status: '连接状态',
+    reset: '重置会话',
+    restart: '重启 Bot',
+    sessions: '浏览会话',
+    delsessions: '删除会话',
+    loop: '循环任务',
+    edit: '编辑消息',
+    diagnose: '系统诊断',
+    refresh: '刷新上下文',
+    copy: '复制回复',
+    revert: '撤销消息',
+    upload: '上传文件',
+    delete: '删除上传文件',
+    oc: '使用 OpenCode',
+    cc: '使用 Claude Code',
+    cx: '使用 Codex',
+    copilot: '使用 Copilot',
+    agents: '查看 Agent',
+    model: '切换模型',
+    expert: '专家评审+自动修复 (需 git 仓库)',
+};
+
 const COMMAND_MAP = {};
 for (const [cmd, aliases] of Object.entries(COMMAND_ALIASES)) {
     for (const alias of aliases) {
         COMMAND_MAP[alias] = cmd;
     }
+}
+
+export function getHelpText() {
+    const lines = ['📖 指令\n'];
+    const groups = [
+        ['🟢 常用', ['start', 'help', 'status', 'reset', 'copy', 'revert', 'diagnose']],
+        ['🔄 任务', ['loop', 'refresh', 'restart']],
+        ['📂 会话', ['sessions', 'delsessions']],
+        ['🤖 AI', ['model', 'agents', 'oc', 'cc']],
+        ['⬆️ 文件', ['upload', 'delete']],
+        ['🧠 专家', ['expert']],
+    ];
+    for (const [title, cmds] of groups) {
+        lines.push(title);
+        for (const cmd of cmds) {
+            const aliases = COMMAND_ALIASES[cmd];
+            const aliasStr = aliases.length > 1 ? ` (${aliases.slice(1).join(', ')})` : '';
+            lines.push(`  /${cmd}${aliasStr} — ${COMMAND_HELP[cmd] || cmd}`);
+        }
+        lines.push('');
+    }
+    lines.push('💬 直接发消息给 AI!');
+    return lines.join('\n');
 }
 
 export function detectCommand(text) {
@@ -106,33 +153,7 @@ export async function routeMessage(parsed, ctx) {
         case 'command': {
             switch (parsed.command) {
                 case 'help':
-                    return `📖 指令
-
-🟢 常用:
-/start — 首次认证
-/help — 帮助
-/status — 连接状态
-/reset — 清空会话
-/copy — 复制回复
-/revert — 撤销消息
-
-🔄 任务:
-/loop — 循环执行
-/refresh — 刷新上下文
-/restart — 重启 bot
-/stop — 停止 bot
-
-📂 会话:
-/sessions — 浏览会话
-/delsessions — 删除会话
-
-🤖 AI 模型:
-/model — 切换模型
-/agents — 查看可用 Agent
-/oc — 使用 OpenCode
-/cc — 使用 Claude Code
-
-💬 直接发消息给 AI!`;
+                    return getHelpText();
 
                 case 'agents': {
                     const agents = registry.listAgents();
@@ -164,9 +185,6 @@ export async function routeMessage(parsed, ctx) {
 
                 case 'restart':
                     return '🔄 重启信号已发送，bot 即将重启...';
-
-                case 'stop':
-                    return '🛑 停止信号已发送';
 
                 case 'sessions': {
                     const sessions = await getSessionsList();

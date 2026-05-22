@@ -1,4 +1,4 @@
-import { detectCommand, COMMAND_ALIASES } from '../core/router.js';
+import { detectCommand, COMMAND_ALIASES, getHelpText } from '../core/router.js';
 import { getOrCreateSession, saveSessionMapping, sessionManager } from '../core/session.js';
 import { splitMessage } from '../core/notifications.js';
 import { initOpenCode, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, listProviders, updateGlobalModel } from '../opencode/client.js';
@@ -91,36 +91,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
         case 'help':
-            await adapter.reply(ctx.threadId, `📖 指令
-
-🟢 常用:
-/start — 首次认证
-/help — 帮助
-/status — 查看状态
-/reset — 重置会话
-/copy — 复制回复
-/revert — 撤销消息
-
-🔄 任务:
-/loop — 循环执行
-/refresh — 刷新上下文
-/restart — 重启 bot
-/stop — 停止 bot
-
-📂 会话:
-/sessions — 浏览会话
-/delsessions — 删除会话
-
-🤖 AI 模型:
-/model — 切换模型
-/agents — 查看可用 Agent
-/oc — 使用 OpenCode
-/cc — 使用 Claude Code
-
-⬆️ 文件:
-/upload — 上传构建产物
-
-💬 直接发消息给 AI!`);
+            await adapter.reply(ctx.threadId, getHelpText());
             return true;
                 case 'status': {
                     const connected = await checkConnection();
@@ -486,17 +457,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             await new Promise(r => setTimeout(r, 500));
             console.log('[bot] about to exit with code 200');
             process.exit(200);
-            return true;
-        }
-
-        case 'stop': {
-            await adapter.reply(ctx.threadId, '🛑 正在停止 bot...');
-            setTimeout(() => {
-                if (globalThis.__weixinBotShutdown) {
-                    globalThis.__weixinBotShutdown(false);
-                }
-                setTimeout(() => process.exit(0), 1000);
-            }, 500);
             return true;
         }
 

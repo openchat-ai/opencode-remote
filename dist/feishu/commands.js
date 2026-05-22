@@ -3,7 +3,7 @@ import { splitMessage } from '../core/notifications.js';
 import { EMOJI } from '../core/types.js';
 import { initOpenCode, createSession, sendMessage, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, listProviders, updateGlobalModel } from '../opencode/client.js';
 import { claimOwnership } from '../core/auth.js';
-import { COMMAND_ALIASES, detectCommand } from '../core/router.js';
+import { COMMAND_ALIASES, detectCommand, getHelpText } from '../core/router.js';
 import { registry } from '../core/registry.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, basename } from 'path';
@@ -76,40 +76,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
         case 'help':
-            await adapter.reply(ctx.threadId, `📖 指令
-
-/start — 首次认证
-/help h ? — 帮助
-/status — 连接状态
-/reset — 清空会话
-/restart — 重启 bot
-/stop — 停止 bot
-/retry — 重试连接
-/approve .a .y .1 — 同意变更
-/reject .r .n .0 — 拒绝变更
-/diff — 查看变更
-/files — 已修改文件
-/sessions — 浏览会话
-/delsessions — 删除会话
-/loop — 循环任务
-/summary — 会话摘要
-/compact — 压缩会话上下文
-/copy — 复制最新 AI 回复
-/revert — 撤销 AI 回复
-/switchdir — 切换项目目录
-/scope — 设置上下文范围
-/analyze — 分析后执行
-/commit — 生成提交信息
-/review — 代码审查
-/flush — 刷新记忆
-
-🤖 AI 模型:
-/model — 切换模型
-/agents — 查看可用 Agent
-/oc — 使用 OpenCode
-/cc — 使用 Claude Code
-
-💬 直接发消息给 AI!`);
+            await adapter.reply(ctx.threadId, getHelpText());
             return true;
         case 'agents': {
             const agents = registry.listAgents();

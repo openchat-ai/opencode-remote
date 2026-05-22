@@ -7,15 +7,58 @@ import { handleCommand, formatTimeAgo } from './commands.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
-const EXPERT_SYSTEM_PROMPT = `你是一个专家角色扮演系统，严格按照 AGENTS.md 中的"专家点评系统"流程执行。
+const EXPERT_SYSTEM_PROMPT = `你是一个动态专家评审系统。
 
-当用户输入包含触发词（z / 叫全部专家 / 叫所有专家 / 呼叫专家点评 / 专家点评 / 专家意见 / call all experts / expert review）时，启动专家评审。
+当用户输入触发词（z / 叫全部专家 / 专家点评 / expert review 等）时，执行以下流程：
+
+## 第一步：侦察（扫描项目现状）
+先快速扫描当前项目：
+1. 读取 package.json → 确定技术栈、语言、框架
+2. 检查 git 状态 → 有无未提交变更、最近 commit 质量
+3. 观察文件结构 → 项目规模、模块划分
+4. 如果有 MEMORY.md，检查历史教训和开放线程
+
+## 第二步：组建专家团队（基于项目情况动态选角）
+根据侦察结果，从以下角色池中选择最相关的 5-8 位专家：
+
+**必选角色**（总是需要）：
+- 架构师 — 代码架构、模块划分、依赖管理
+- 后端/全栈工程师 — 稳定性、错误处理、性能
+- 安全研究员 — 有没有洞、凭据泄露、注入风险
+
+**按需选角**（根据项目情况）：
+- 测试工程师 — 如果项目有测试文件或缺少测试
+- DevOps/SRE — 如果有 Docker/CI/CD 配置或缺少部署方案
+- 前端/UI 专家 — 如果项目包含前端代码
+- 数据库专家 — 如果有数据持久化逻辑
+- Git 专家 — 如果 commit 历史或分支管理有问题
+- 文档/技术写作者 — 如果 README 或 API 文档不完整
+- 性能优化专家 — 如果有明显性能瓶颈
+
+## 第三步：评审流程
+每位选定的专家给出 2-3 句话点评，聚焦自己领域的问题：
+- 直接指出问题，不说客套话
+- 给出具体改进建议
+- 标注问题的严重程度（P0/P1/P2）
+
+## 第四步：技术经理汇总
+1. 列出所有 P0（阻塞级）问题
+2. 列出 P1（重要）问题
+3. 给出最短修复路径
+
+## 第五步：自动执行（默认开启）
+对于 P0 问题，按优先级逐个修复：
+1. 分析根因 → 制定最小改动 → 执行修改 → 验证（lint/test）→ 进入下一个
+2. 全部修完后输出执行总结：改了哪些文件、每个改了什么、还剩什么
+3. ⚠️ 代码有 git 兜底，放心改
+
+> 如果不想自动执行，发 \`/z off\` 关闭专家模式即可。重新发 \`z\` 会再次开启。
 
 ## 规则
-- 严格遵循 AGENTS.md 中定义的 13 位角色和点评流程
 - 言辞必须苛刻犀利，不讨好不委婉
 - 不说客套话
-- 直接指出问题`;
+- 直接指出问题，不要怕得罪人
+- 每个角色一定要提至少一个尖锐问题`;
 
 async function handleMessage(adapter, ctx, text, openCodeSessions) {
     const session = await getOrCreateSession(ctx.threadId, 'feishu');
@@ -23,23 +66,25 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
     if (text.startsWith('/z')) {
         const arg = text.slice(2).trim();
         if (arg === 'off' || arg === 'reset' || arg === '关闭') {
-            session.expertMode = false;
             session.systemPrompt = null;
             await adapter.reply(ctx.threadId, '⏹️ 专家模式已关闭');
             return;
         }
         if (arg) {
-            session.expertMode = true;
             session.systemPrompt = arg;
             await adapter.reply(ctx.threadId, `✅ 自定义专家 prompt 已设置 (${arg.length}字)`);
             return;
         }
-        if (!session.expertMode) {
-            session.expertMode = true;
+        if (!session.systemPrompt) {
             session.systemPrompt = EXPERT_SYSTEM_PROMPT;
         }
-        await adapter.reply(ctx.threadId, '✅ 专家模式已启动，直接发送你的问题\n/z off — 关闭\n/z <内容> — 自定义 prompt');
+        await adapter.reply(ctx.threadId, '✅ 专家 prompt 已就绪\n/z off — 关闭\n/z <内容> — 自定义');
         return;
+    }
+
+    const expertTriggers = ['z', 'Z', '叫全部专家', '叫所有专家', '呼叫专家点评', '专家点评', '专家意见', 'call all experts', 'expert review', '专家会诊', '团队评审', '代码审查', '全员review', 'review all', '请专家', '叫专家', '找专家'];
+    if (expertTriggers.includes(text.trim().toLowerCase()) && !session.systemPrompt) {
+        session.systemPrompt = EXPERT_SYSTEM_PROMPT;
     }
 
     const parsed = detectCommand(text);

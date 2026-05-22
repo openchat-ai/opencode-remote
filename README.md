@@ -2,12 +2,28 @@
 
 通过微信、Telegram、飞书等平台随时随地控制 OpenCode。
 
+## 为什么这么爽？
+
+**输入一个字母 `z`，14 位 AI 专家帮你审项目。** 架构师、安全研究员、测试工程师、运维……每人给出犀利点评，技术经理汇总 P0-P2 任务清单。你在手机上躺着看就行。
+
+```bash
+# 安装
+npm install -g @yvhitxcel/opencode-remote
+
+# 开干
+opencode-remote telegram
+# → 输入 /z 叫专家团队
+# → 输入 z 让专家分析项目
+# → AI 自动干活，你喝茶
+```
+
 ## 功能特性
 
-- **多平台支持** — 微信、飞书、Telegram
-- **多 AI Agent** — OpenCode、Claude Code、Codex、GitHub Copilot
-- **会话管理** — 多会话并行，自动保存与恢复
-- **智能循环任务** — 长时间任务自动循环执行
+- **🤖 专家评审系统** — `/z` 一键召唤 14 位 AI 专家，自动分析、投票、出方案
+- **📱 多平台支持** — 微信、飞书、Telegram
+- **🧠 多 AI Agent** — OpenCode、Claude Code、Codex、GitHub Copilot
+- **🔄 循环任务** — `/loop` 让 AI 持续干活
+- **🔍 一键诊断** — `/diagnose` 检查各组件状态
 
 ## 安装
 
@@ -17,15 +33,42 @@ npm install -g opencode-remote
 
 ## 快速开始
 
+推荐路径：**Telegram（5分钟）→ 微信（10分钟）→ 飞书（30分钟）**
+
 ```bash
-# 微信
-opencode-remote weixin
+# 1. 安装
+npm install -g @yvhitxcel/opencode-remote
 
-# 飞书
-opencode-remote feishu
-
-# Telegram
+# 2. 启动 Telegram（最快上手，无需配置）
 opencode-remote telegram
+# 在 Telegram 里搜索你的 bot，发送 /start
+
+# 3. 微信（需要 iLink 平台账号）
+opencode-remote weixin
+# 扫码登录后即可使用
+
+# 4. 飞书（需要企业版账号）
+opencode-remote feishu
+```
+
+## 首次使用
+
+1. 安装后运行 `opencode-remote telegram`
+2. 在 Telegram 里找到你的 bot，发送 `/start`
+3. 发送 `/help` 查看所有命令
+4. 发送一条消息给 AI，比如"你好"
+5. **发送 `/z` 启动专家模式，然后发送 `z` —— 14 位 AI 专家开始分析你的项目**
+
+> 💡 所有核心功能（对话、会话管理、AI 模型切换、专家评审）无需任何配置。只有 `/upload` 上传才需要七牛云。
+
+## 手机开发工作流
+
+把 `weixin.bat` 复制到项目根目录，双击运行，扫码登录后即可在手机上通过微信开发该项目。
+
+```bash
+# 或者手动指定目录
+cd 你的项目
+opencode-remote
 ```
 
 ## 平台兼容性
@@ -90,9 +133,33 @@ opencode-remote
 
 **七牛云是可选的**，不配也能用全部核心功能。只有上传构建产物才需要配置。
 
+## 常见问题
+
+**Q: 为什么有些命令不能用？**
+A: 先运行 `/diagnose` 检查各组件状态。Telegram 功能最全，微信和飞书部分命令需要额外配置。
+
+**Q: 微信怎么登录？**
+A: 运行 `opencode-remote weixin`，终端会显示二维码，用微信扫码即可。
+
+**Q: 专家评审怎么用？**
+A: 发 `z` 或 `叫全部专家`，AI 自动扫项目、组队评审、出 P0/P1 修复方案，**然后自动修代码**。
+
+**Q: `/z` 自动修代码会改坏吗？**
+A: **强烈建议在 git 仓库中使用。** 如果改坏了可以 `git checkout .` 回滚。没有 git 的项目，AI 改完不可逆。不确定的话先发 `/z off` 关闭自动执行，只看报告不改代码。
+
+**Q: 需要自己的服务器吗？**
+A: 需要一台电脑运行 bot，手机上通过 IM 控制。OpenCode 也运行在这台电脑上。
+
+**Q: 如何更新？**
+A: `npm update -g @yvhitxcel/opencode-remote`
+
 ## 系统要求
 
 - Node.js >= 18.0.0
+
+## 致谢
+
+本项目基于 [opencode-remote-control](https://github.com/ceociocto/opencode-remote-control) 开发。
 
 ## 许可证
 
