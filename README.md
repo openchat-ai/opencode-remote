@@ -56,6 +56,8 @@ opencode-remote telegram
 
 > ✅ 可用 &nbsp; ❌ 未实现
 
+> 💡 七牛云仅用于 `/upload` `/delete` 文件上传功能，**所有核心命令（对话、会话管理、AI 模型切换等）无需任何配置即可使用**。安装后直接 `opencode-remote telegram` 即可体验。
+
 ## 快速使用
 
 ```bash
@@ -69,9 +71,24 @@ opencode-remote weixin
 opencode-remote feishu
 ```
 
+## 手机开发工作流
+
+1. 把 `weixin.bat` 复制到你的项目根目录
+2. 双击运行（或在终端执行），扫码登录微信
+3. 之后在手机上发消息给 bot，AI 会直接操作这个项目目录
+4. 查看状态、修改代码、git 提交，全部在微信里完成
+
+```bash
+# 或者手动指定项目目录
+cd 你的项目
+opencode-remote
+```
+
 ## 配置说明
 
 首次运行会在 `~/.opencode-remote/` 目录生成配置。详见 `.env.example`。
+
+**七牛云是可选的**，不配也能用全部核心功能。只有上传构建产物才需要配置。
 
 ## 系统要求
 
