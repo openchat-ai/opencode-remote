@@ -48,8 +48,13 @@ opencode-remote telegram
 | `/agents` | 查看 Agent | ✅ | ✅ | ✅ |
 | `/oc` | 使用 OpenCode | ✅ | ✅ | ✅ |
 | `/cc` | 使用 Claude Code | ✅ | ✅ | ✅ |
+| `/edit` | 编辑消息 | ✅ | ✅ | ✅ |
+| `/upload` | 上传文件(需七牛云) | ✅ | ✅ | ✅ |
+| `/delete` | 删除上传文件 | ✅ | ✅ | ✅ |
+| `/diagnose` | 系统诊断 | ✅ | ✅ | ✅ |
+| `/expert` `/z` | 专家评审模式 | ✅ | ✅ | ✅ |
 
-> ✅ 可用 &nbsp; ❌ 未实现（微信需要 iLink 平台账号）
+> ✅ 可用 &nbsp; ❌ 未实现
 
 ## 快速使用
 

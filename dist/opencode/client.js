@@ -480,8 +480,9 @@ export async function sendMessage(session, message, callbacks) {
                 }
 
                 if (newText && newText !== responseText) {
-                    // New or updated content found - update and keep polling
+                    const delta = newText.slice(responseText.length);
                     responseText = newText;
+                    callbacks?.onTextDelta?.(delta);
                     idleCycles = 0;
                 }
 
@@ -501,7 +502,7 @@ export async function sendMessage(session, message, callbacks) {
             console.warn('⏰ Timeout waiting for response, status:', lastStatus);
             // Try one more time with a fresh message query
             try {
-                const finalMsgs = await session.client.session.messages({ path: { id: session.sessionId }, query: { limit: 10 } });
+                const finalMsgs = await session.client.session.messages({ path: { id: session.sessionId }, query: { limit: 50 } });
                 if (finalMsgs.data?.length) {
                     for (let i = finalMsgs.data.length - 1; i >= 0; i--) {
                         const msg = finalMsgs.data[i];

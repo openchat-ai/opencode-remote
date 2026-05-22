@@ -297,6 +297,8 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             session._historyList = null;
             session._forkList = null;
             session._forkSessionId = null;
+            session.expertMode = false;
+            session.systemPrompt = null;
             session._analyzeMode = false;
             session._analyzeTask = null;
             session._showSessionState = null;
@@ -579,6 +581,17 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
 
 
 
+        case 'diagnose': {
+            const { checkConnection } = await import('../opencode/client.js');
+            const diag = ['🔍 诊断报告\n'];
+            diag.push(`OpenCode: ${await checkConnection().then(() => '✅').catch(() => '❌')}`);
+            diag.push(`七牛云: ${process.env.QINIU_ACCESS_KEY ? '✅' : '❌'}`);
+            diag.push(`项目目录: ${session.projectDir || globalThis.__autoProjectDir || '❌ 未设置'}`);
+            diag.push(`会话: ${openCodeSessions?.get(ctx.threadId) ? '✅' : '❌'}`);
+            const msgs = splitMessage(diag.join('\n'));
+            for (const m of msgs) await adapter.reply(ctx.threadId, m);
+            return true;
+        }
         default:
             await adapter.reply(ctx.threadId, `${EMOJI.WARNING} 未知指令: ${command}\n\n请发送 /help 查看可用指令`);
             return true;

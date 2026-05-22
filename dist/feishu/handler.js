@@ -7,73 +7,41 @@ import { handleCommand, formatTimeAgo } from './commands.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
-const lastFlushTime = new Map();
-const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+const EXPERT_SYSTEM_PROMPT = `你是一个专家角色扮演系统，严格按照 AGENTS.md 中的"专家点评系统"流程执行。
 
-async function autoFlush(adapter, threadId, session, openCodeSessions) {
-    const lastFlush = lastFlushTime.get(threadId) || 0;
-    const now = Date.now();
-    if (now - lastFlush < FLUSH_INTERVAL_MS) return;
-    if (!session.opencodeSessionId) return;
-    const ocSession = openCodeSessions?.get(threadId);
-    if (!ocSession) return;
-    const projectDir = session.projectDir || globalThis.__autoProjectDir;
-    if (!projectDir) return;
-    try {
-        const { flushMemory } = await import('../weixin/flush.js');
-        lastFlushTime.set(threadId, now);
-        const result = await flushMemory(projectDir, session, ocSession);
-        if (result.learned) {
-            console.log(`[auto-flush] ${result.learned}`);
-        } else {
-            console.log(`[auto-flush] ${result.summary.split('\n')[0]}`);
-        }
-    } catch (e) {
-        console.warn(`[auto-flush] 失败: ${e.message}`);
-    }
-}
+当用户输入包含触发词（z / 叫全部专家 / 叫所有专家 / 呼叫专家点评 / 专家点评 / 专家意见 / call all experts / expert review）时，启动专家评审。
 
-function loadMemoryContext(projectRoot) {
-    const paths = [
-        join(projectRoot, 'MEMORY.md'),
-        join(projectRoot, '..', 'MEMORY.md'),
-        join(projectRoot, '..', '..', 'MEMORY.md'),
-    ];
-    for (const memoryPath of paths) {
-        if (existsSync(memoryPath)) {
-            try {
-                const content = readFileSync(memoryPath, 'utf-8');
-                const lines = content.split('\n');
-                const insights = [];
-                let inInsights = false;
-                for (const line of lines) {
-                    if (line.startsWith('## 经验教训')) {
-                        inInsights = true;
-                        continue;
-                    }
-                    if (inInsights) {
-                        if (line.startsWith('## ') || line.startsWith('# ')) {
-                            break;
-                        }
-                        if (line.trim().startsWith('- [')) {
-                            insights.push(line.trim());
-                        }
-                    }
-                }
-                if (insights.length > 0) {
-                    return `【项目记忆 - 经验教训】\n${insights.slice(-10).join('\n')}`;
-                }
-            } catch (e) {
-                console.warn(`[memory] 加载失败: ${e.message}`);
-            }
-            break;
-        }
-    }
-    return null;
-}
+## 规则
+- 严格遵循 AGENTS.md 中定义的 13 位角色和点评流程
+- 言辞必须苛刻犀利，不讨好不委婉
+- 不说客套话
+- 直接指出问题`;
 
 async function handleMessage(adapter, ctx, text, openCodeSessions) {
     const session = await getOrCreateSession(ctx.threadId, 'feishu');
+
+    if (text.startsWith('/z')) {
+        const arg = text.slice(2).trim();
+        if (arg === 'off' || arg === 'reset' || arg === '关闭') {
+            session.expertMode = false;
+            session.systemPrompt = null;
+            await adapter.reply(ctx.threadId, '⏹️ 专家模式已关闭');
+            return;
+        }
+        if (arg) {
+            session.expertMode = true;
+            session.systemPrompt = arg;
+            await adapter.reply(ctx.threadId, `✅ 自定义专家 prompt 已设置 (${arg.length}字)`);
+            return;
+        }
+        if (!session.expertMode) {
+            session.expertMode = true;
+            session.systemPrompt = EXPERT_SYSTEM_PROMPT;
+        }
+        await adapter.reply(ctx.threadId, '✅ 专家模式已启动，直接发送你的问题\n/z off — 关闭\n/z <内容> — 自定义 prompt');
+        return;
+    }
+
     const parsed = detectCommand(text);
     if (parsed) {
         await handleCommand(adapter, ctx, parsed.name, parsed.arg, openCodeSessions);
@@ -163,13 +131,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                         if (target.directory) {
                             session.projectDir = target.directory;
                             globalThis.__autoProjectDir = target.directory;
-                            const memoryPath = join(target.directory, 'MEMORY.md');
-                            if (!existsSync(memoryPath)) {
-                                try {
-                                    const { initMemorySystem } = await import('../weixin/init-memory.js');
-                                    await initMemorySystem(target.directory);
-                                } catch { console.debug('[session-switch] 自动初始化记忆失败'); }
-                            }
                         }
                         await adapter.reply(ctx.threadId, `✅ 已切换至: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                     } else {
@@ -206,13 +167,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                     if (target.directory) {
                         session.projectDir = target.directory;
                         globalThis.__autoProjectDir = target.directory;
-                        const memoryPath = join(target.directory, 'MEMORY.md');
-                        if (!existsSync(memoryPath)) {
-                            try {
-                                const { initMemorySystem } = await import('../weixin/init-memory.js');
-                                await initMemorySystem(target.directory);
-                            } catch { console.debug('[session-switch] 自动初始化记忆失败'); }
-                        }
                     }
                     await adapter.reply(ctx.threadId, `✅ 已切换至: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                 } else {
@@ -265,38 +219,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
 🔄 /retry — 重试连接`);
         return;
     }
-    const rememberKeywords = ['记住', '记录', '记下', '以后', '偏好', '习惯'];
-    const deleteKeywords = ['删除', '忘记', '取消', '抹掉', '清除'];
-    const hasRememberKeyword = rememberKeywords.some(kw => text.includes(kw));
-    const hasDeleteKeyword = deleteKeywords.some(kw => text.includes(kw));
-    if (hasDeleteKeyword && hasRememberKeyword) {
-        let query = text.replace(/删除|忘记|取消|抹掉|清除|记忆|记录|关于|那个/g, '').trim();
-        try {
-            const memoryManager = (await import('../weixin/memory-manager.js')).default;
-            if (query.length > 0) {
-                const deleted = memoryManager.deleteMemory('prefs', query);
-                if (deleted) {
-                    await adapter.reply(ctx.threadId, `🗑️ 已删除包含 "${query}" 的记忆条目`);
-                    return;
-                } else {
-                    await adapter.reply(ctx.threadId, `🤷 未找到包含 "${query}" 的记忆条目`);
-                    return;
-                }
-            } else {
-                memoryManager.deleteMemory('prefs', '');
-                await adapter.reply(ctx.threadId, '🗑️ 已清空所有用户偏好记忆');
-                return;
-            }
-        } catch { console.debug('[feishu-memory] memory-manager unavailable'); }
-    } else if (hasRememberKeyword) {
-        if (text.length > 2 && text.length < 500) {
-            try {
-                const memoryManager = (await import('../weixin/memory-manager.js')).default;
-                memoryManager.saveMemory('prefs', { content: text });
-                console.log(`[feishu-memory] Saved user preference: ${text}`);
-            } catch { console.debug('[feishu-memory] memory-manager unavailable'); }
-        }
-    }
     await forwardToOpenCode(adapter, ctx, text, openCodeSessions, session);
 }
 
@@ -331,21 +253,15 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
         scopedText = `[上下文范围: ${session._contextScope}]\n\n${text}`;
     }
     if (projectDir) {
-        const memoryContext = loadMemoryContext(projectDir);
-        if (memoryContext) {
-            scopedText = `${memoryContext}\n\n${scopedText}`;
-        }
         if (!scopedText.includes('项目目录')) {
             scopedText = `[当前项目目录: ${projectDir}]\n\n${scopedText}`;
         }
     }
-    try {
-        const memoryManager = (await import('../weixin/memory-manager.js')).default;
-        const autoMemory = memoryManager.getRelevantMemory(text);
-        if (autoMemory) {
-            scopedText = `【用户记忆/偏好】\n${autoMemory}\n\n${scopedText}`;
-        }
-    } catch { console.debug('[feishu-memory] memory-manager not available'); }
+
+    if (session.expertMode && session.systemPrompt) {
+        scopedText = `${session.systemPrompt}\n\n${scopedText}`;
+    }
+
     console.log(`📤 Forwarding to OpenCode: ${text.substring(0, 80)}...`);
     try {
         let lastToolNotified = '';
@@ -452,12 +368,6 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
             } catch (e) {
                 console.error('[feishu-forward] 分享会话失败:', e.message);
             }
-        }
-        if (hasToolActivity && projectDir) {
-            const threadId = ctx.threadId;
-            setTimeout(() => {
-                autoFlush(adapter, threadId, session, openCodeSessions).catch(() => {});
-            }, 2000);
         }
     } catch (error) {
         session.taskStartTime = null;

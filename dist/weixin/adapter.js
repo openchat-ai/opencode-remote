@@ -1,36 +1,6 @@
 import { randomBytes } from 'crypto';
 import { sendMessage as sendWeixinMessage, getConfig, sendTyping } from './api.js';
 
-const lastFlushTime = new Map();
-const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
-
-async function autoFlush(adapter, threadId, session, openCodeSessions) {
-    const lastFlush = lastFlushTime.get(threadId) || 0;
-    const now = Date.now();
-    
-    if (now - lastFlush < FLUSH_INTERVAL_MS) return;
-    if (!session.opencodeSessionId) return;
-    
-    const ocSession = openCodeSessions?.get(threadId);
-    if (!ocSession) return;
-    
-    const projectDir = session.projectDir || globalThis.__autoProjectDir;
-    if (!projectDir) return;
-    
-    try {
-        const { flushMemory } = await import('./flush.js');
-        lastFlushTime.set(threadId, now);
-        const result = await flushMemory(projectDir, session, ocSession);
-        if (result.learned) {
-            console.log(`[auto-flush] ${result.learned}`);
-        } else {
-            console.log(`[auto-flush] ${result.summary.split('\n')[0]}`);
-        }
-    } catch (e) {
-        console.warn(`[auto-flush] Failed: ${e.message}`);
-    }
-}
-
 function createWeixinAdapter(baseUrl, token, botId) {
     const contextTokens = new Map();
     const typingTickets = new Map();
@@ -161,5 +131,5 @@ function createWeixinAdapter(baseUrl, token, botId) {
     };
 }
 
-export { createWeixinAdapter, autoFlush };
+export { createWeixinAdapter };
 export default createWeixinAdapter;

@@ -4,8 +4,7 @@ import { splitMessage } from '../core/notifications.js';
 import { initOpenCode, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, listProviders, updateGlobalModel } from '../opencode/client.js';
 import { claimOwnership } from '../core/auth.js';
 import { registry } from '../core/registry.js';
-import { uploadToQiniu, findBuildOutputs, formatSize, deleteFromQiniu } from './qiniu-upload.js';
-import { initMemorySystem } from './init-memory.js';
+import { uploadToQiniu, findBuildOutputs, formatSize, deleteFromQiniu } from '../core/qiniu.js';
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
 
@@ -320,15 +319,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                 if (latest.directory) {
                     session.projectDir = latest.directory;
                     globalThis.__autoProjectDir = latest.directory;
-                    
-                    const { existsSync } = await import('fs');
-                    const { join } = await import('path');
-                    const memoryPath = join(latest.directory, 'MEMORY.md');
-                    if (!existsSync(memoryPath)) {
-                        const { initMemorySystem } = await import('./init-memory.js');
-                        await initMemorySystem(latest.directory);
-                        console.log('Memory system initialized.');
-                    }
                 }
                 
                 await adapter.reply(ctx.threadId, `✅ 已恢复最近会话\n\n会话: ${latest.title || 'Untitled'}\n📁 目录: ${latest.directory || 'N/A'}\n📝 更新: ${new Date(latest.time.updated).toLocaleString()}`);
@@ -615,6 +605,8 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             session._historyList = null;
             session._forkList = null;
             session._forkSessionId = null;
+            session.expertMode = false;
+            session.systemPrompt = null;
             session._analyzeMode = false;
             session._analyzeTask = null;
             session._showSessionState = null;
@@ -745,6 +737,18 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         }
 
 
+
+        case 'diagnose': {
+            const { checkConnection } = await import('../opencode/client.js');
+            const diag = ['🔍 诊断报告\n'];
+            diag.push(`OpenCode: ${await checkConnection().then(() => '✅').catch(() => '❌')}`);
+            diag.push(`七牛云: ${process.env.QINIU_ACCESS_KEY ? '✅' : '❌'}`);
+            diag.push(`项目目录: ${session.projectDir || globalThis.__autoProjectDir || '❌ 未设置'}`);
+            diag.push(`会话: ${openCodeSessions?.get(ctx.threadId) ? '✅' : '❌'}`);
+            const msgs = splitMessage(diag.join('\n'));
+            for (const m of msgs) await adapter.reply(ctx.threadId, m);
+            return true;
+        }
 
         default:
             return false;

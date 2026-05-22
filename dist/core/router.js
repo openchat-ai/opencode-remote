@@ -13,16 +13,19 @@ export const COMMAND_ALIASES = {
     delsessions: ['delsessions', 'del'],
     loop: ['loop'],
     edit: ['edit'],
+    diagnose: ['diagnose'],
     refresh: ['refresh'],
     copy: ['copy'],
     revert: ['revert'],
     upload: ['upload'],
+    delete: ['delete'],
     oc: ['oc'],
     cc: ['cc'],
     cx: ['cx'],
     copilot: ['copilot'],
     agents: ['agents'],
     model: ['model'],
+    expert: ['expert', 'z', 'review'],
 };
 
 const COMMAND_MAP = {};
@@ -48,16 +51,21 @@ export function detectCommand(text) {
     return null;
 }
 
+function resolveAgentFromCommand(commandName) {
+    const agent = registry.findAgent(commandName);
+    if (agent) return agent.name;
+    const fallback = { oc: 'opencode', cc: 'claude-code', cx: 'codex', copilot: 'copilot' };
+    return fallback[commandName] || null;
+}
+
 export function parseMessage(text) {
     const trimmed = text.trim();
     if (!trimmed) return { type: 'default', prompt: '' };
 
     const detected = detectCommand(text);
     if (detected) {
-        if (['oc', 'cc', 'cx', 'copilot'].includes(detected.name)) {
-            const agentName = detected.name === 'cc' ? 'claude-code' :
-                             detected.name === 'cx' ? 'codex' :
-                             detected.name === 'copilot' ? 'copilot' : 'opencode';
+        const agentName = resolveAgentFromCommand(detected.name);
+        if (agentName) {
             return { type: 'agent', agent: agentName, prompt: detected.arg };
         }
         return { type: 'command', command: detected.name, arg: detected.arg };
@@ -260,9 +268,60 @@ export async function routeMessage(parsed, ctx) {
                     }
                 }
 
+                case 'diagnose': {
+                    const diag = ['🔍 诊断报告\n'];
+                    const qiniuOk = !!process.env.QINIU_ACCESS_KEY;
+                    const teleOk = !!process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN !== 'your_bot_token_here';
+                    const feiOk = !!process.env.FEISHU_APP_ID && !!process.env.FEISHU_APP_SECRET;
+                    diag.push(`OpenCode: ${await checkConnection().then(() => '✅').catch(() => '❌')}`);
+                    diag.push(`七牛云: ${qiniuOk ? '✅' : '❌'}`);
+                    diag.push(`Telegram: ${teleOk ? '✅' : '❌'}`);
+                    diag.push(`飞书: ${feiOk ? '✅' : '❌'}`);
+                    diag.push(`会话: ${ctx.opencodeSessionId ? '✅' : '❌'}`);
+                    return diag.join('\n');
+                }
                 case 'upload':
+                    return process.env.QINIU_ACCESS_KEY ? '⬆️ 发送文件路径: /upload <path>' : '⬆️ 上传需要配置 QINIU_ACCESS_KEY 等环境变量';
+                case 'delete':
+                    return '🗑️ 用法: /delete <key>';
                 case 'edit':
-                    return '❌ 当前平台不支持此命令';
+                    return ctx.opencodeSessionId ? '✏️ 用法: /edit <消息编号>' : '❌ 没有活跃的会话';
+
+                case 'expert': {
+                    const { execSync } = await import('child_process');
+                    const { existsSync, readFileSync } = await import('fs');
+                    const { homedir } = await import('os');
+                    const { join } = await import('path');
+                    const projectRoot = process.cwd();
+                    let gitStatus = '', recentCommits = '', dirTree = '';
+                    try { gitStatus = execSync('git status --short', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { gitStatus = '(not a git repo)'; }
+                    try { recentCommits = execSync('git log --oneline -5', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { recentCommits = '(no commits)'; }
+                    try { dirTree = execSync('cmd /c "tree /F /A"', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { dirTree = '(failed to get tree)'; }
+                    const customPromptPath = join(homedir(), '.opencode-remote', 'expert-prompt.md');
+                    let promptTemplate = '';
+                    if (existsSync(customPromptPath)) {
+                        promptTemplate = readFileSync(customPromptPath, 'utf-8');
+                    } else {
+                        promptTemplate = `你是一个软件工程专家团队。请按以下流程执行：
+
+## 项目上下文
+{git_status}
+{recent_commits}
+{directory_tree}
+
+## 要求
+1. 分析项目当前状态
+2. 找出问题
+3. 给出改进建议`;
+                    }
+                    const prompt = promptTemplate.replace('{git_status}', gitStatus.trim()).replace('{recent_commits}', recentCommits.trim()).replace('{directory_tree}', dirTree.trim());
+                    const agent = registry.findAgent('opencode');
+                    if (!agent) return '❌ OpenCode agent not found';
+                    const available = await agent.isAvailable().catch(() => false);
+                    if (!available) return '❌ OpenCode 不可用';
+                    const response = await agent.sendPrompt(ctx.threadId || 'expert-review', prompt, []);
+                    return response || '无响应';
+                }
 
                 default:
                     return '❓ 未知指令';

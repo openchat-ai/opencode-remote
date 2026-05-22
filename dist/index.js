@@ -46,3 +46,15 @@ if (existsSync(CONFIG_FILE)) {
 }
 
 startAllBots();
+
+function shutdown(signal) {
+    console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+    setTimeout(() => {
+        console.log('Goodbye!');
+        process.exit(0);
+    }, 2000);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGHUP', () => shutdown('SIGHUP'));

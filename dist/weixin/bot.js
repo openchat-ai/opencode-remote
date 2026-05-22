@@ -100,17 +100,6 @@ export async function startWeixinBot(botConfig, restartFn) {
                 if (latest.directory) {
                     console.log(`Project directory: ${latest.directory}`);
                     globalThis.__autoProjectDir = latest.directory;
-                    const { existsSync } = await import('fs');
-                    const { join } = await import('path');
-                    const memoryPath = join(latest.directory, 'MEMORY.md');
-                    if (!existsSync(memoryPath)) {
-                        console.log('Memory system not found, auto-initializing...');
-                        const { initMemorySystem } = await import('./init-memory.js');
-                        await initMemorySystem(latest.directory);
-                        console.log('Memory system initialized.');
-                    } else {
-                        console.log('Memory system found.');
-                    }
                 }
             }
         }

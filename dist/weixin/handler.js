@@ -4,13 +4,19 @@ import { initOpenCode, createSession, sendMessage as sendToOpenCode, checkConnec
 import { isAuthorized, hasOwner } from '../core/auth.js';
 import { registry } from '../core/registry.js';
 import { sendMessage as sendWeixinMessage } from './api.js';
-import memoryManager from './memory-manager.js';
 import { randomBytes } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { autoFlush } from './adapter.js';
 import { detectCommand } from '../core/router.js';
 import { handleCommand, formatTimeAgo, _registerStartLoopCycle } from './commands.js';
+
+const EXPERT_SYSTEM_PROMPT = `你是一个专家角色扮演系统，严格按照 AGENTS.md 中的"专家点评系统"流程执行。
+
+当用户输入包含触发词（z / 叫全部专家 / 叫所有专家 / 呼叫专家点评 / 专家点评 / 专家意见 / call all experts / expert review）时，启动专家评审。
+
+## 规则
+- 严格遵循 AGENTS.md 中定义的 13 位角色和点评流程
+- 言辞必须苛刻犀利，不讨好不委婉
+- 不说客套话
+- 直接指出问题`;
 
 async function startLoopCycle(adapter, ctx, openCodeSessions, session) {
     if (!session.loopMode) return;
@@ -54,48 +60,6 @@ async function startLoopCycle(adapter, ctx, openCodeSessions, session) {
 }
 
 _registerStartLoopCycle(startLoopCycle);
-
-function loadMemoryContext(projectRoot) {
-    const paths = [
-        join(projectRoot, 'MEMORY.md'),
-        join(projectRoot, '..', 'MEMORY.md'),
-        join(projectRoot, '..', '..', 'MEMORY.md'),
-    ];
-
-    for (const memoryPath of paths) {
-        if (existsSync(memoryPath)) {
-            try {
-                const content = readFileSync(memoryPath, 'utf-8');
-                const lines = content.split('\n');
-                const insights = [];
-                let inInsights = false;
-
-                for (const line of lines) {
-                    if (line.startsWith('## 经验教训')) {
-                        inInsights = true;
-                        continue;
-                    }
-                    if (inInsights) {
-                        if (line.startsWith('## ') || line.startsWith('# ')) {
-                            break;
-                        }
-                        if (line.trim().startsWith('- [')) {
-                            insights.push(line.trim());
-                        }
-                    }
-                }
-
-                if (insights.length > 0) {
-                    return `【项目记忆 - 经验教训】\n${insights.slice(-10).join('\n')}`;
-                }
-            } catch (e) {
-                console.warn(`[memory] Failed to load: ${e.message}`);
-            }
-            break;
-        }
-    }
-    return null;
-}
 
 async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) {
     adapter.sendTypingIndicator(ctx.threadId).catch(() => {});
@@ -156,39 +120,19 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
         scopedText = `[上下文范围: ${session._contextScope}]\n\n${text}`;
     }
 
-    if (projectDir) {
-        const memoryContext = loadMemoryContext(projectDir);
-        if (memoryContext) {
-            scopedText = `${memoryContext}\n\n${scopedText}`;
-        }
-    }
-
-    const autoMemory = memoryManager.getRelevantMemory(text);
-    if (autoMemory) {
-        scopedText = `【用户记忆/偏好】\n${autoMemory}\n\n${scopedText}`;
-    }
-
     if (projectDir && !scopedText.includes('项目目录')) {
         scopedText = `[当前项目目录: ${projectDir}]\n\n${scopedText}`;
+    }
+
+    if (session.expertMode && session.systemPrompt) {
+        scopedText = `${session.systemPrompt}\n\n${scopedText}`;
     }
     
     let response = '';
     let hasToolActivity = false;
-    let idleTimer = null;
-    let resolveIdle = null;
-    const IDLE_TIMEOUT = 5000;
+    const IDLE_TIMEOUT = session.expertMode ? 120000 : 30000;
 
-    const pokeIdle = () => {
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-            if (resolveIdle) resolveIdle();
-        }, IDLE_TIMEOUT);
-    };
-
-    const idleDone = new Promise((resolve) => { resolveIdle = resolve; });
-    pokeIdle();
-
-    const taskDone = sendToOpenCode(openCodeSession, scopedText, {
+    const result = await sendToOpenCode(openCodeSession, scopedText, {
         onEvent: (event) => {
             if (event.type === 'tool.call') {
                 const props = event.properties || {};
@@ -208,27 +152,22 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
                     session.modifiedFiles.add(input.path);
                 }
             }
-            pokeIdle();
-        },
-        onTextDelta: (delta) => {
-            response += delta;
-            pokeIdle();
         },
         onStatusChange: (status) => {
             if (status.hasToolActivity) hasToolActivity = true;
-            if (status.type === 'busy' || status.type === 'retry') pokeIdle();
         },
     }).catch((e) => {
         console.error('[forwardToOpenCode] Task error:', e.message);
+        return '';
     });
 
-    await Promise.race([taskDone, idleDone]);
-    clearTimeout(idleTimer);
     stopHeartbeat();
 
-    const trimmedResponse = response.trim();
+    const trimmedResponse = (result || response).trim();
     if (!trimmedResponse) {
-        await adapter.reply(ctx.threadId, 'AI 返回空响应，请重试');
+        console.error(`[forwardToOpenCode] Empty response (race: ${whoWon})`);
+        const msg = whoWon === 'idle' ? '⏰ OpenCode 响应超时，请重试' : 'AI 返回空响应，请重试';
+        await adapter.reply(ctx.threadId, msg);
         return;
     }
 
@@ -247,12 +186,6 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
         } catch (replyErr) {
             console.error('[forwardToOpenCode] reply failed:', replyErr.message);
         }
-    }
-
-    if (hasToolActivity && projectDir) {
-        setTimeout(() => {
-            autoFlush(adapter, ctx.threadId, session, openCodeSessions).catch(() => {});
-        }, 2000);
     }
 
     const allThreads = getThreadsBySessionIdFromMapping(openCodeSession.sessionId);
@@ -286,6 +219,31 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session) 
 
 async function handleMessage(adapter, ctx, text, openCodeSessions) {
     const session = await getOrCreateSession(ctx.threadId, 'weixin');
+
+    const expertTriggers = ['z', '叫全部专家', '叫所有专家', '呼叫专家点评', '专家点评', '专家意见', 'call all experts', 'expert review'];
+    const trimmedLower = text.trim().toLowerCase();
+    if (text.startsWith('/z')) {
+        const arg = text.slice(2).trim();
+        if (arg === 'off' || arg === 'reset' || arg === '关闭') {
+            session.expertMode = false;
+            session.systemPrompt = null;
+            await adapter.reply(ctx.threadId, '⏹️ 专家模式已关闭');
+            return;
+        }
+        if (arg) {
+            session.expertMode = true;
+            session.systemPrompt = arg;
+            await adapter.reply(ctx.threadId, `✅ 自定义专家 prompt 已设置 (${arg.length}字)`);
+            return;
+        }
+        if (!session.expertMode) {
+            session.expertMode = true;
+            session.systemPrompt = EXPERT_SYSTEM_PROMPT;
+        }
+        await adapter.reply(ctx.threadId, '✅ 专家模式已启动，直接发送你的问题\n/z off — 关闭\n/z <内容> — 自定义 prompt');
+        return;
+    }
+
     const detected = detectCommand(text);
     if (detected) {
         const handled = await handleCommand(adapter, ctx, detected.name, detected.arg, openCodeSessions);
@@ -418,14 +376,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                         if (target.directory) {
                             session.projectDir = target.directory;
                             globalThis.__autoProjectDir = target.directory;
-                            const { existsSync } = await import('fs');
-                            const { join } = await import('path');
-                            const memoryPath = join(target.directory, 'MEMORY.md');
-                            if (!existsSync(memoryPath)) {
-                                const { initMemorySystem } = await import('./init-memory.js');
-                                await initMemorySystem(target.directory);
-                                console.log(`Auto-initialized memory for: ${target.directory}`);
-                            }
                         }
                         await adapter.reply(ctx.threadId, `✅ 已切换到: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                     } else {
@@ -464,14 +414,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                     if (target.directory) {
                         session.projectDir = target.directory;
                         globalThis.__autoProjectDir = target.directory;
-                        const { existsSync } = await import('fs');
-                        const { join } = await import('path');
-                        const memoryPath = join(target.directory, 'MEMORY.md');
-                        if (!existsSync(memoryPath)) {
-                            const { initMemorySystem } = await import('./init-memory.js');
-                            await initMemorySystem(target.directory);
-                            console.log(`Auto-initialized memory for: ${target.directory}`);
-                        }
                     }
                     await adapter.reply(ctx.threadId, `✅ 已切换到: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                 } else {
@@ -593,35 +535,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
     if (!connected) {
         await adapter.reply(ctx.threadId, '❌ OpenCode 离线，请检查服务是否运行');
         return;
-    }
-    
-    const rememberKeywords = ['记住', '记录', '记下', '以后', '偏好', '习惯'];
-    const deleteKeywords = ['删除', '忘记', '取消', '抹掉', '清除'];
-    
-    const hasRememberKeyword = rememberKeywords.some(kw => text.includes(kw));
-    const hasDeleteKeyword = deleteKeywords.some(kw => text.includes(kw));
-    
-    if (hasDeleteKeyword && hasRememberKeyword) {
-        let query = text.replace(/删除|忘记|取消|抹掉|清除|记忆|记录|关于|那个/g, '').trim();
-        if (query.length > 0) {
-            const deleted = memoryManager.deleteMemory('prefs', query);
-            if (deleted) {
-                await adapter.reply(ctx.threadId, `🗑️ 已删除包含 "${query}" 的记忆条目`);
-                return;
-            } else {
-                await adapter.reply(ctx.threadId, `🤷 未找到包含 "${query}" 的记忆条目`);
-                return;
-            }
-        } else {
-            memoryManager.deleteMemory('prefs', '');
-            await adapter.reply(ctx.threadId, `🗑️ 已清空所有用户偏好记忆`);
-            return;
-        }
-    } else if (hasRememberKeyword) {
-        if (text.length > 2 && text.length < 500) {
-            memoryManager.saveMemory('prefs', { content: text });
-            console.log(`[memory] Saved user preference: ${text}`);
-        }
     }
     
     if (!session.commandHistory) {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { setGlobalProxy } from './opencode/client.js';
 import { printBanner, VERSION, runConfig, runConfigTimeout } from './core/setup.js';
-import { runStart, runTelegramOnly, runFeishuOnly, runWeixinOnly, runAgentsCommand, runInitMemory } from './bot-runner.js';
+import { runStart, runTelegramOnly, runFeishuOnly, runWeixinOnly, runAgentsCommand } from './bot-runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,7 +23,6 @@ Commands:
   config             Configure a channel (interactive selection)
   config timeout     Set request timeout (for long-running tasks)
   agents             List available AI agents
-  init-memory        Initialize Claude Code-style memory system in current directory
   help               Show this help message
   version            Show version information
 
@@ -248,9 +247,6 @@ function runCli() {
             break;
         case 'agents':
             runAgentsCommand();
-            break;
-        case 'init-memory':
-            runInitMemory();
             break;
         default:
             console.log(`Unknown command: ${command}`);

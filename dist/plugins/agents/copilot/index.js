@@ -4,7 +4,7 @@ import { platform } from 'os';
 
 export class CopilotAgentAdapter {
     name = 'copilot';
-    aliases = ['copilot-cli'];
+    aliases = ['copilot-cli', 'copilot'];
     
     async isAvailable() {
         return new Promise((resolve) => {
