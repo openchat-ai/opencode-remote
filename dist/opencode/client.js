@@ -172,6 +172,8 @@ export async function initFetchConfig() {
 }
 let opencodeInstance = null;
 let opencodeServer = null;
+let lastStdoutTime = 0;
+let lastStdoutLine = '';
 const PORTS_TO_TRY = [4096, 4097, 4098];
 
 // TCP-level port probe: true = occupied, false = free
@@ -241,8 +243,9 @@ export async function initOpenCode() {
                 windowsHide: isWindows,
             });
             opencodeServer.stdout.on('data', (d) => {
+                lastStdoutTime = Date.now();
                 const msg = d.toString().trim();
-                if (msg) console.log(`[opencode] ${msg}`);
+                if (msg) { lastStdoutLine = msg.slice(0, 120); console.log(`[opencode] ${msg}`); }
             });
             opencodeServer.stderr.on('data', (d) => {
                 const msg = d.toString().trim();
@@ -395,7 +398,7 @@ export async function sendMessage(session, message, callbacks) {
         let hasToolActivity = false;
         let lastStatus = '';
         let idleCycles = 0;
-        const IDLE_THRESHOLD = 3; // Exit after 3 idle polls (no new content, not processing)
+        const IDLE_THRESHOLD = callbacks?.idleThreshold || 10;
 
         while (Date.now() - startTime < TIMEOUT_MS) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -427,10 +430,9 @@ export async function sendMessage(session, message, callbacks) {
                     }
                 }
 
-                // If actively processing, reset idle counter and wait
-                if (lastStatus === 'pending_tool' || lastStatus === 'thinking') {
-                    idleCycles = 0;
-                    continue;
+                // 将 OpenCode 实时日志通过回调发给用户
+                if (lastStdoutLine && Date.now() - lastStdoutTime < 5000) {
+                    callbacks?.onStdout?.(lastStdoutLine);
                 }
 
                 // Check if there was tool activity and notify via callback
@@ -486,10 +488,16 @@ export async function sendMessage(session, message, callbacks) {
                     idleCycles = 0;
                 }
 
-                // Exit only when truly idle: have response, not processing, no new text for N cycles
-                if (responseText && lastStatus !== 'pending_tool' && lastStatus !== 'thinking') {
+                // stdout 有输出说明 OpenCode 在干活
+                if (Date.now() - lastStdoutTime < 15000) {
+                    idleCycles = 0;
+                }
+
+                // Exit when idle: have response, no new text for N cycles
+                if (responseText) {
                     idleCycles++;
-                    if (idleCycles >= IDLE_THRESHOLD) {
+                    // 简单对话快速返回：无工具活动且 idleThreshold 较低时，2轮即退
+                    if (idleCycles >= IDLE_THRESHOLD || (idleCycles >= 2 && !hasToolActivity && IDLE_THRESHOLD < 20)) {
                         break;
                     }
                 }

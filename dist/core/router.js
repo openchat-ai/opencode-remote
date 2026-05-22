@@ -27,6 +27,35 @@ export const COMMAND_ALIASES = {
     expert: ['expert', 'z', 'review'],
 };
 
+export const EXPERT_SYSTEM_PROMPT = `你是一个专家评审系统。用户消息含触发词（z/叫全部专家/专家点评）时启动，前后可带具体问题则聚焦该问题。
+
+**核心价值观**：致力于为用户创造价值。以人为本、安全第一、质量第一、绿色可持续。
+
+## 流程
+1. **侦察** → 扫 package.json、git 状态、目录结构、依赖，确定技术栈和项目规模
+2. **动态组队** → 根据侦察结果，从下方角色池中选最相关的 3-6 人。**不需要全部出场，只选对当前项目有价值的**
+   - 架构师（总是需要）
+   - 后端工程师（如有后端代码）
+   - 安全研究员（总是需要）
+   - 测试工程师（如有测试文件或缺少测试）
+   - SRE/运维（如有部署配置）
+   - 开源社区经理（如是开源项目）
+   - 用户支持（如有用户交互）
+   - 竞品分析师（如有市场竞争需求）
+   - Git/工程专家（如有协作问题）
+   - 技术经理（汇总）
+3. **点评** → 每位选定专家 2-3 句，完整展示。语气狠但逻辑自洽
+4. **行动项** → 技术经理出 P0/P1，每条标注：负责人、验收人、状态、证据（4 个凡事）
+5. **执行** → 对 P0 逐个修复，修完一条报一条
+6. **总结** → 改了哪些文件、还剩什么
+
+## 规则
+- 点评和行动项完整展示给用户
+- 不选无关角色，不浪费 token
+- 不做过度设计，方案简单可维护
+- 不无限扩展，修完即止
+- 言辞犀利，直接指出问题`;
+
 const COMMAND_HELP = {
     start: '认领所有权',
     help: '显示帮助',
@@ -306,38 +335,11 @@ export async function routeMessage(parsed, ctx) {
                     return ctx.opencodeSessionId ? '✏️ 用法: /edit <消息编号>' : '❌ 没有活跃的会话';
 
                 case 'expert': {
-                    const { execSync } = await import('child_process');
-                    const { existsSync, readFileSync } = await import('fs');
-                    const { homedir } = await import('os');
-                    const { join } = await import('path');
-                    const projectRoot = process.cwd();
-                    let gitStatus = '', recentCommits = '', dirTree = '';
-                    try { gitStatus = execSync('git status --short', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { gitStatus = '(not a git repo)'; }
-                    try { recentCommits = execSync('git log --oneline -5', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { recentCommits = '(no commits)'; }
-                    try { dirTree = execSync('cmd /c "tree /F /A"', { cwd: projectRoot, timeout: 5000, encoding: 'utf-8' }); } catch { dirTree = '(failed to get tree)'; }
-                    const customPromptPath = join(homedir(), '.opencode-remote', 'expert-prompt.md');
-                    let promptTemplate = '';
-                    if (existsSync(customPromptPath)) {
-                        promptTemplate = readFileSync(customPromptPath, 'utf-8');
-                    } else {
-                        promptTemplate = `你是一个软件工程专家团队。请按以下流程执行：
-
-## 项目上下文
-{git_status}
-{recent_commits}
-{directory_tree}
-
-## 要求
-1. 分析项目当前状态
-2. 找出问题
-3. 给出改进建议`;
-                    }
-                    const prompt = promptTemplate.replace('{git_status}', gitStatus.trim()).replace('{recent_commits}', recentCommits.trim()).replace('{directory_tree}', dirTree.trim());
                     const agent = registry.findAgent('opencode');
                     if (!agent) return '❌ OpenCode agent not found';
                     const available = await agent.isAvailable().catch(() => false);
                     if (!available) return '❌ OpenCode 不可用';
-                    const response = await agent.sendPrompt(ctx.threadId || 'expert-review', prompt, []);
+                    const response = await agent.sendPrompt(ctx.threadId || 'expert-review', EXPERT_SYSTEM_PROMPT + '\n\n用户问题：' + (parsed.arg || '请评审当前项目'), []);
                     return response || '无响应';
                 }
 

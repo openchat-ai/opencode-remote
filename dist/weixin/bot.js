@@ -134,6 +134,7 @@ export async function startWeixinBot(botConfig, restartFn) {
     globalThis.__weixinBotRunning = () => running;
 
     let buf = '';
+    let retryCount = 0;
     console.log('Polling for messages...');
 
     if (process.env.OPENCODE_RESTART === '1') {
@@ -170,8 +171,17 @@ export async function startWeixinBot(botConfig, restartFn) {
             }
         } catch (e) {
             if (!running) break;
-            console.error('Polling error:', e);
-            await new Promise(r => setTimeout(r, 2000));
+            const errMsg = e.message || '';
+            const isConnReset = errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed');
+            if (isConnReset) {
+                retryCount++;
+                const delay = Math.min(2000 * retryCount, 15000);
+                console.error(`[bot] Connection error (${retryCount}), retry in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            } else {
+                console.error('Polling error:', e);
+                await new Promise(r => setTimeout(r, 2000));
+            }
         }
     }
     
