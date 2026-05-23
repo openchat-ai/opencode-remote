@@ -395,7 +395,6 @@ export async function sendMessage(session, message, callbacks) {
 
         // Poll for new response - keep going as long as new content keeps arriving
         const startTime = Date.now();
-        const FIRST_RESPONSE_TIMEOUT = callbacks?.idleThreshold > 20 ? 120000 : 60000;
         let responseText = '';
         let hasToolActivity = false;
         let idleSince = 0; // 最后一次收到新内容的时间戳
@@ -450,22 +449,6 @@ export async function sendMessage(session, message, callbacks) {
                     }
                 }
 
-                // 第一条回复超时
-                if (!responseText && Date.now() - startTime > FIRST_RESPONSE_TIMEOUT) {
-                    console.warn('[sendMessage] First response timeout');
-                    const finalMsgs = await session.client.session.messages({ path: { id: session.sessionId }, query: { limit: 50 } }).catch(() => {});
-                    if (finalMsgs?.data?.length) {
-                        for (let i = finalMsgs.data.length - 1; i >= 0; i--) {
-                            const msg = finalMsgs.data[i];
-                            if (msg.info?.role === 'assistant' && msg.parts) {
-                                const parts = msg.parts.filter(p => p.type === 'text' && p.text);
-                                if (parts.length) { responseText = parts.map(p => p.text).join('\n'); break; }
-                            }
-                        }
-                    }
-                    break;
-                }
-
                 // 检查 AI 是否还在忙（thinking/pending_tool 说明还没干完）
                 const latestStatus = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1]?.info?.status : '';
                 if (latestStatus === 'thinking' || latestStatus === 'pending_tool') {
@@ -510,7 +493,6 @@ export async function sendMessage(session, message, callbacks) {
         }
         
         callbacks?.onStatusChange?.({ type: 'idle', hasToolActivity });
-        console.log(`💬 Response: ${responseText.slice(0, 100)}...`);
         return responseText;
     }
     catch (error) {
