@@ -2,6 +2,13 @@
 import { spawn } from 'child_process';
 import { platform } from 'os';
 
+const CRASH_PATTERNS = [
+    'Assertion failed',
+    'UV_HANDLE_CLOSING',
+    'src\\win\\async.c',
+    'libuv',
+];
+
 export class CopilotAgentAdapter {
     name = 'copilot';
     aliases = ['copilot-cli', 'copilot'];
@@ -25,6 +32,16 @@ export class CopilotAgentAdapter {
         const historyText = history.map(msg => `[${msg.role}]: ${msg.content}`).join('\n\n');
         return `Context:\n${historyText}\n\n${prompt}`;
     }
+
+    extractErrorMessage(stdout, stderr) {
+        const lines = [...stdout.trim().split('\n'), ...stderr.trim().split('\n')]
+            .map(l => l.trim()).filter(Boolean)
+            .filter(l => !CRASH_PATTERNS.some(p => l.includes(p)));
+        if (lines.length > 0) return lines.join('\n');
+        const first = [...stdout.trim().split('\n'), ...stderr.trim().split('\n')]
+            .find(l => /Error|error|ERROR|^\d{3}/.test(l));
+        return first || null;
+    }
     
     callCopilot(prompt) {
         return new Promise((resolve) => {
@@ -37,7 +54,12 @@ export class CopilotAgentAdapter {
             proc.stdout?.on('data', (data) => { stdout += data.toString(); });
             proc.stderr?.on('data', (data) => { stderr += data.toString(); });
             proc.on('close', (code) => {
-                resolve(code === 0 ? stdout.trim() : `❌ Copilot 错误: ${stderr}`);
+                if (code === 0) {
+                    resolve(stdout.trim());
+                } else {
+                    const detail = this.extractErrorMessage(stdout, stderr);
+                    resolve(`❌ Copilot 错误${detail ? `: ${detail}` : ''}`);
+                }
             });
         });
     }

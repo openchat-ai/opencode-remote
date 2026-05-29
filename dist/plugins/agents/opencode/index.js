@@ -2,6 +2,13 @@
 import { spawn } from 'child_process';
 import { platform } from 'os';
 
+const CRASH_PATTERNS = [
+    'Assertion failed',
+    'UV_HANDLE_CLOSING',
+    'src\\win\\async.c',
+    'libuv',
+];
+
 export class OpenCodeAgentAdapter {
     name = 'opencode';
     aliases = ['oc', 'opencodeai'];
@@ -28,17 +35,28 @@ export class OpenCodeAgentAdapter {
         return `Previous conversation:\n${historyText}\n\nCurrent request: ${prompt}`;
     }
     
+    extractErrorMessage(stdout, stderr) {
+        const lines = [...stdout.trim().split('\n'), ...stderr.trim().split('\n')]
+            .map(l => l.trim()).filter(Boolean)
+            .filter(l => !CRASH_PATTERNS.some(p => l.includes(p)));
+
+        if (lines.length > 0) return lines.join('\n');
+        const first = [...stdout.trim().split('\n'), ...stderr.trim().split('\n')]
+            .find(l => /Error|error|ERROR|^\d{3}/.test(l));
+        return first || null;
+    }
+
     callOpenCode(prompt) {
         return new Promise((resolve) => {
             const proc = spawn('opencode', ['run', '--format', 'json', prompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             });
-            
+
             let stdout = '';
             let stderr = '';
             let fullText = '';
-            
+
             proc.stdout?.on('data', (data) => {
                 stdout += data.toString();
                 const lines = stdout.split('\n');
@@ -51,12 +69,16 @@ export class OpenCodeAgentAdapter {
                     } catch {}
                 }
             });
-            
+
             proc.stderr?.on('data', (data) => { stderr += data.toString(); });
-            
+
             proc.on('close', (code) => {
                 if (code !== 0) {
-                    resolve(`❌ OpenCode 错误。请运行 \`opencode auth login\` 配置认证。`);
+                    const detail = this.extractErrorMessage(stdout, stderr);
+                    const hint = detail
+                        ? `: ${detail}`
+                        : '。请运行 `opencode auth login` 配置认证。';
+                    resolve(`❌ OpenCode 错误${hint}`);
                 } else {
                     resolve(fullText || '完成');
                 }

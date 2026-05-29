@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.16.2 (2026-05-29)
+
+### 🐛 Fixed
+- oc/cx/copilot 指令统一修复错误捕获：所有 agent 非零退出时从 stdout+stderr 提取真实错误，过滤 libuv 崩溃噪音
+
+---
+
 ## v0.16.1 (2026-05-29)
 
 ### 🐛 Fixed
