@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  opencode-remote:
+    build: .
+    container_name: opencode-remote
+    restart: unless-stopped
+    ports:
+      - "9080:9080"
+    environment:
+      - NODE_ENV=production
+      - OPENCODE_CHILD=1
+      # Configure at least one IM platform:
+      # Telegram (easiest, 5 min setup)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      # Optional: WeChat iLink
+      - WEIXIN_BOT_ID=${WEIXIN_BOT_ID:-}
+      - WEIXIN_TOKEN=${WEIXIN_TOKEN:-}
+      # Optional: Feishu
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      # Optional: Qiniu for file upload
+      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
+      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
+      - QINIU_BUCKET=${QINIU_BUCKET:-}
+      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
+    volumes:
+      # Mount project directory for AI to work on
+      - ./project:/app/project
+      # Persist config and sessions
+      - opencode-remote-data:/root/.opencode-remote
+    working_dir: /app/project
+    command: ["start"]
+
+volumes:
+  opencode-remote-data:

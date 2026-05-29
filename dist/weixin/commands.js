@@ -1,4 +1,4 @@
-import { detectCommand, COMMAND_ALIASES, getHelpText } from '../core/router.js';
+import { detectCommand, COMMAND_ALIASES, getHelpText, DEMO_RESPONSES, setDemoMode, isDemoMode } from '../core/router.js';
 import { getOrCreateSession, saveSessionMapping, sessionManager } from '../core/session.js';
 import { splitMessage } from '../core/notifications.js';
 import { initOpenCode, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, listProviders, updateGlobalModel } from '../opencode/client.js';
@@ -93,6 +93,18 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         case 'help':
             await adapter.reply(ctx.threadId, getHelpText());
             return true;
+        case 'tutorial': {
+            const { TUTORIAL_STEPS } = await import('../core/router.js');
+            const stepNum = parseInt(arg, 10);
+            const step = !isNaN(stepNum) && stepNum >= 1 && stepNum <= TUTORIAL_STEPS.length ? stepNum : 1;
+            const s = TUTORIAL_STEPS[step - 1];
+            let msg = `📚 教程 · 第 ${s.step}/${TUTORIAL_STEPS.length} 步\n━━━━━━━━━━━━━━━━\n\n${s.title}\n\n${s.desc}\n\n`;
+            if (s.action) msg += `👉 ${s.action}`;
+            msg += `\n\n回复 /tutorial${step < TUTORIAL_STEPS.length ? ` 继续第${step + 1}步` : ''} 进入下一步`;
+            const msgs = splitMessage(msg);
+            for (const m of msgs) await adapter.reply(ctx.threadId, m);
+            return true;
+        }
                 case 'status': {
                     const connected = await checkConnection();
                     const running = session.taskStartTime ? Math.round((Date.now() - session.taskStartTime) / 1000) : 0;
@@ -697,6 +709,21 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         }
 
 
+
+        case 'demo': {
+            const argText = (arg || '').trim().toLowerCase();
+            if (argText === 'off' || argText === 'exit' || argText === 'stop') {
+                setDemoMode(ctx.threadId, false);
+                await adapter.reply(ctx.threadId, '⏹️ 已退出沙箱模式');
+                return true;
+            }
+            setDemoMode(ctx.threadId, true);
+            let msg = '🎮 沙箱模式已启动\n\n在此模式下所有命令返回模拟输出，无需连接 OpenCode。\n\n';
+            msg += '试试发送: /help /status /model /agents /loop /copy\n';
+            msg += '发送 /demo off 退出';
+            await adapter.reply(ctx.threadId, msg);
+            return true;
+        }
 
         case 'diagnose': {
             const { checkConnection } = await import('../opencode/client.js');

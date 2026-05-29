@@ -101,6 +101,17 @@ export const TEMPLATES = {
         details: 'Changes were automatically rejected.',
     }),
 };
+// Task completion notification with timing
+export function formatTaskCompletion(taskName, startTime, extra) {
+    const elapsed = Date.now() - startTime;
+    const seconds = Math.floor(elapsed / 1000);
+    const timeStr = seconds >= 60 ? `${Math.floor(seconds / 60)}分${seconds % 60}秒` : `${seconds}秒`;
+    const lines = [`✅ 任务完成: ${taskName}`, '', `⏱️ 耗时: ${timeStr}`];
+    if (extra?.files && extra.files > 0) lines.push(`📄 修改文件: ${extra.files} 个`);
+    if (extra?.iterations && extra.iterations > 0) lines.push(`🔄 迭代次数: ${extra.iterations}`);
+    return lines.join('\n');
+}
+
 // Split message for Telegram's 4096 char limit
 export function splitMessage(text, maxLength = 4000) {
     if (text.length <= maxLength) {

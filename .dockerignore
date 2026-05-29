@@ -1,0 +1,12 @@
+node_modules/
+.git/
+.gitignore
+*.md
+test/
+scripts/
+daily-logs/
+memory/
+.claude/
+.env
+.env.example
+weixin.bat

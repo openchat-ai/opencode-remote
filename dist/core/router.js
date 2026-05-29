@@ -1,6 +1,18 @@
 // Message router - full command definitions shared across all platforms
 import { registry } from './registry.js';
 import { initOpenCode, listProviders, updateGlobalModel, checkConnection, resumeSession, shareSession } from '../opencode/client.js';
+import { formatTaskCompletion } from './notifications.js';
+
+const demoModeMap = new Map();
+
+export function setDemoMode(threadId, enabled) {
+    if (enabled) demoModeMap.set(threadId, true);
+    else demoModeMap.delete(threadId);
+}
+
+export function isDemoMode(threadId) {
+    return demoModeMap.has(threadId);
+}
 
 export const COMMAND_ALIASES = {
     start: ['start'],
@@ -25,6 +37,34 @@ export const COMMAND_ALIASES = {
     agents: ['agents'],
     model: ['model'],
     expert: ['expert', 'z', 'Z', 'review'],
+    tutorial: ['tutorial', 'guide', 'walkthrough'],
+    demo: ['demo', 'sandbox', 'preview'],
+};
+
+export const DEMO_RESPONSES = {
+    start: '🚀 准备就绪，发送消息给 OpenCode 开始工作\n\n💡 这是演示模式，所有命令显示模拟输出',
+    get help() { return getHelpText(); },
+    status: '✅ OpenCode 在线\n✅ 七牛云 已配置\n✅ 会话: abc12345\n📁 项目目录: /home/user/my-project',
+    reset: '🔄 会话已重置，下次发送消息将创建新会话',
+    restart: '🔄 重启信号已发送，bot 即将重启...',
+    sessions: '📂 最近会话:\n\n1. Telegram 会话 (2分钟前)\n2. 微信开发会话 (15分钟前)\n3. 专家评审 (1小时前)',
+    delsessions: '🗑️ 选择要删除的会话（回复编号）：\n\n1. Telegram 会话\n2. 微信开发会话\n\n回复编号删除',
+    loop: '🔄 循环任务已启动\n指令: 智能模式\n限制: 最多10次迭代或30分钟\n\n发送 /loop off 停止',
+    diagnose: '🔍 诊断报告\n\nOpenCode: ✅\n七牛云: ✅\nTelegram: ✅\n飞书: ❌ 未配置\n会话: ✅',
+    refresh: '✅ 会话已刷新',
+    copy: '📋 最新回复:\n\n这是 AI 的示例回复内容，演示 /copy 命令的功能。',
+    revert: '↩️ 已撤销最近的消息\n\n发送 /revert undo 恢复',
+    upload: '⬆️ 用法: /upload <文件路径>\n\n当前项目构建产物:\n📦 build/app.apk (12.5 MB)',
+    delete: '🗑️ 用法: /delete <key>\n\n示例: /delete uploads/1234567890-app.apk',
+    model: '🧠 可用模型:\n\nOpenAI (openai):\n  gpt-4o\n  gpt-4o-mini\n  o3-mini\n\nAnthropic (anthropic):\n  claude-sonnet-4-20250514\n\n用法: /model <provider/model>',
+    agents: '🤖 可用 AI Agent:\n\n✅ opencode\n✅ claude-code\n✅ codex\n❌ copilot\n\n切换: /oc /cc /cx /copilot',
+    oc: '✅ 已切换到 OpenCode\n\n💬 发送消息给 OpenCode 开始工作',
+    cc: '✅ 已切换到 Claude Code',
+    cx: '✅ 已切换到 Codex',
+    copilot: '✅ 已切换到 GitHub Copilot',
+    edit: '✏️ 用法: /edit <消息编号>\n\n选择要修改的消息，然后发送修正后的内容。',
+    expert: '🧠 专家评审模式已启动\n\n14 位 AI 专家正在分析您的项目...\n\n架构师、安全研究员、测试工程师、VC/投资人等角色将依次给出评审意见。',
+    tutorial: '📚 教程已启动\n发送 /tutorial 1 开始第1步',
 };
 
 export const EXPERT_SYSTEM_PROMPT = `你是一个专家评审系统。用户消息含触发词（z/c/叫全部专家/专家点评）时启动评审，前后可带具体问题则聚焦该问题。
@@ -134,6 +174,8 @@ const COMMAND_HELP = {
     agents: '查看 Agent',
     model: '切换模型',
     expert: '专家评审(z/叫全部专家)',
+    tutorial: '交互式教程(step-by-step 上手)',
+    demo: '沙箱模式(无需配置体验全部命令)',
 };
 
 const COMMAND_MAP = {};
@@ -249,12 +291,106 @@ async function getSessionMessages(sessionId) {
     return result.data || [];
 }
 
+export const TUTORIAL_STEPS = [
+    {
+        step: 1,
+        title: '💬 发送第一条消息',
+        desc: '直接发一条消息给 bot，比如："帮我写一个 Hello World 程序"\nAI 会自动接收并在你的电脑上执行。',
+        action: '现在试试：输入 "你好" 或 "帮我写一个 Python 程序"',
+    },
+    {
+        step: 2,
+        title: '📊 查看状态',
+        desc: '发送 /status 查看 OpenCode 是否在线、当前会话信息、运行中的任务。',
+        action: '试试：发送 /status',
+    },
+    {
+        step: 3,
+        title: '📋 复制 AI 回复',
+        desc: 'AI 回复了长篇代码？用 /copy 一键复制最新 AI 回复的内容。',
+        action: '试试：发送 /copy',
+    },
+    {
+        step: 4,
+        title: '🤖 切换 AI 模型',
+        desc: '不同模型擅长不同任务。用 /model 查看可用模型，/model provider/model 切换。',
+        action: '试试：发送 /model 查看列表',
+    },
+    {
+        step: 5,
+        title: '🧠 召唤专家评审',
+        desc: '发送 /z 启动专家评审模式，14 位 AI 专家分析你的项目，自动出修复方案并执行。',
+        action: '试试：发送 /z，然后发送 z',
+    },
+    {
+        step: 6,
+        title: '🔄 循环任务',
+        desc: '让 AI 持续工作。发送 /loop 启动循环任务，AI 会反复推进项目。\n停止：/loop off',
+        action: '试试：发送 /loop 检查测试覆盖率',
+    },
+    {
+        step: 7,
+        title: '🔍 系统诊断',
+        desc: '出问题了？/diagnose 一键检查 OpenCode、七牛云、各平台连接状态。',
+        action: '试试：发送 /diagnose',
+    },
+    {
+        step: 8,
+        title: '🎉 全部搞定',
+        desc: '你已经掌握了所有核心功能！\n下一步建议：\n• /help 查看全部 22 条命令\n• 设置你的项目目录并开始真正的开发\n• 尝试多 Agent 切换：/cc 用 Claude Code，/cx 用 Codex',
+        action: '',
+    },
+];
+
+function getTutorialText(step) {
+    const s = TUTORIAL_STEPS[step - 1];
+    if (!s) return getTutorialText(1);
+    let msg = `📚 教程 · 第 ${s.step}/${TUTORIAL_STEPS.length} 步\n━━━━━━━━━━━━━━━━\n\n${s.title}\n\n${s.desc}\n\n`;
+    if (s.action) msg += `👉 ${s.action}`;
+    msg += `\n\n回复 /tutorial${step < TUTORIAL_STEPS.length ? ` 继续第${step + 1}步\n发送 /tutorial ${step + 1}` : ''} 进入下一步`;
+    return msg;
+}
+
 export async function routeMessage(parsed, ctx) {
+    const threadId = ctx.threadId;
+    if (demoModeMap.has(threadId) && parsed.type === 'command' && DEMO_RESPONSES[parsed.command]) {
+        return DEMO_RESPONSES[parsed.command];
+    }
     switch (parsed.type) {
         case 'command': {
             switch (parsed.command) {
                 case 'help':
                     return getHelpText();
+
+                case 'tutorial': {
+                    const stepNum = parseInt(parsed.arg, 10);
+                    const step = !isNaN(stepNum) && stepNum >= 1 && stepNum <= TUTORIAL_STEPS.length ? stepNum : 1;
+                    return getTutorialText(step);
+                }
+
+                case 'demo': {
+                    const arg = (parsed.arg || '').trim().toLowerCase();
+                    if (arg === 'off' || arg === 'exit' || arg === 'stop') {
+                        setDemoMode(threadId, false);
+                        return '⏹️ 已退出沙箱模式\n\n现在所有命令将正常连接 OpenCode 执行。';
+                    }
+                    setDemoMode(threadId, true);
+                    let msg = '🎮 **沙箱模式已启动**\n\n';
+                    msg += '在此模式下，所有命令返回模拟输出，无需连接 OpenCode。\n\n';
+                    msg += '可用命令:\n';
+                    const groups = [
+                        ['🟢 常用', ['/help', '/start', '/status', '/reset']],
+                        ['🔄 任务', ['/loop', '/refresh', '/diagnose']],
+                        ['🤖 AI', ['/model', '/agents', '/oc', '/cc']],
+                        ['📂 会话', ['/sessions', '/delsessions', '/copy', '/revert']],
+                        ['⬆️ 文件', ['/upload', '/delete']],
+                    ];
+                    for (const [title, cmds] of groups) {
+                        msg += `\n${title}\n  ${cmds.join('  ')}\n`;
+                    }
+                    msg += '\n试试发送上面的命令体验效果！\n发送 /demo off 退出沙箱模式';
+                    return msg;
+                }
 
                 case 'agents': {
                     const agents = registry.listAgents();
@@ -411,8 +547,10 @@ export async function routeMessage(parsed, ctx) {
                     if (!agent) return '❌ OpenCode agent not found';
                     const available = await agent.isAvailable().catch(() => false);
                     if (!available) return '❌ OpenCode 不可用';
+                    const taskStart = Date.now();
                     const response = await agent.sendPrompt(ctx.threadId || 'expert-review', EXPERT_SYSTEM_PROMPT + '\n\n用户问题：' + (parsed.arg || '请评审当前项目'), []);
-                    return response || '无响应';
+                    const notification = response ? '' : `\n\n${formatTaskCompletion('专家评审', taskStart)}`;
+                    return (response || '无响应') + notification;
                 }
 
                 default:

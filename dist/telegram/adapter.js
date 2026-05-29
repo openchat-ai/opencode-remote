@@ -29,10 +29,30 @@ export class TelegramAdapter {
 
     onMessage(handler) { this.messageHandler = handler; }
 
-    async sendMessage(threadId, text) {
+    async sendMessage(threadId, text, opts = {}) {
         if (!this.bot) throw new Error('Telegram adapter not started');
         const chunks = splitMessage(text, { maxLength: 4000, addContinuationMarker: false });
-        for (const chunk of chunks) await this.bot.api.sendMessage(threadId, chunk, { parse_mode: 'Markdown' });
+        for (const chunk of chunks) await this.bot.api.sendMessage(threadId, chunk, { parse_mode: 'Markdown', ...opts });
+    }
+
+    async sendCommandMenu(threadId, title) {
+        if (!this.bot) return;
+        const groups = [
+            ['🟢 常用', ['/help', '/status', '/start', '/reset']],
+            ['🔄 任务', ['/loop', '/refresh', '/restart']],
+            ['🤖 AI', ['/model', '/agents', '/oc', '/cc']],
+            ['🧠 专家', ['/tutorial', '/z', '/diagnose']],
+            ['📂 会话', ['/sessions', '/delsessions', '/copy', '/revert']],
+            ['⬆️ 文件', ['/upload', '/delete']],
+        ];
+        const keyboard = [];
+        for (const [, cmds] of groups) {
+            const row = cmds.map(cmd => ({ text: cmd, callback_data: `cmd:${cmd.slice(1)}` }));
+            keyboard.push(row);
+        }
+        await this.bot.api.sendMessage(threadId, title || '📱 选择指令：', {
+            reply_markup: { inline_keyboard: keyboard },
+        });
     }
 
     async sendTyping(threadId, isTyping) {

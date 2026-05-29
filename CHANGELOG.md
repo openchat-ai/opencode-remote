@@ -1,6 +1,33 @@
 # Changelog
 
-## v0.15.0 (2026-05-22)
+## v0.16.1 (2026-05-29)
+
+### 🐛 Fixed
+- cc 指令错误捕获：过滤 libuv 崩溃噪音（Assertion failed/UV_HANDLE_CLOSING），从 stdout 和 stderr 中提取实际 API 错误（如 400 Bad Request）
+
+---
+
+## v0.16.0 (2026-05-23)
+
+### ✨ New
+- `/tutorial` 交互式教程命令：8 步引导新用户完成"安装→发送第一条消息→专家评审"的完整工作流
+- Telegram inline keyboard 支持：`/help` 和 `/start` 后展示命令按钮，手机端一键触达
+- AI 任务完成通知：长任务完成后推送耗时统计（专家评审、AI 对话等）
+- `/demo` 沙箱模式：所有命令返回模拟输出，无需配置 OpenCode 即可体验全部功能
+- Docker 镜像 + docker-compose.yml：一键部署到服务器，不绑定本地终端
+- CI/CD 流水线（GitHub Actions）：lint → test → Docker 构建发布
+
+### 📦 Infra
+- Dockerfile (node:20-alpine) + docker-compose.yml + .dockerignore
+- .github/workflows/ci.yml：push/PR 自动 lint+test，tag 自动构建 Docker 镜像
+
+### 🏗️ Architecture
+- router.js 新增 TUTORIAL_STEPS + getTutorialText() 教程引擎
+- router.js 新增 DEMO_RESPONSES 模拟响应表 + 线程级沙箱状态管理
+- telegram/adapter.js 新增 sendCommandMenu() inline keyboard 生成器
+- notifications.js 新增 formatTaskCompletion() 任务完成通知模板
+
+---
 
 ### ✨ New
 - `/diagnose` 诊断命令：检查 OpenCode/七牛云/Telegram/飞书 配置状态

@@ -56,6 +56,12 @@
 | R6 | 统一跨平台命令子集 | 测试工程师 | P0-4(5票) | ✅ 已修(R6) | 测试工程师 |
 | R6 | loop状态持久化 | 后端工程师 | P0-5(4票) | ✅ 已修(R6) | 后端工程师 |
 | R7 | README+cli帮助+version bump | 技术经理 | 6项P0 | ✅ 已修(R7) | 技术经理 |
+| R8 | /tutorial 交互式教程 | 用户支持 | P0-1 | ✅ 已修(R8) | 用户支持 |
+| R8 | Telegram inline keyboard | Flutter 开发者 | P0-2 | ✅ 已修(R8) | Flutter 开发者 |
+| R8 | AI 任务完成推送通知 | SRE | P0-3 | ✅ 已修(R8) | SRE |
+| R8 | /demo 沙箱模式 | 开源社区经理 | P0-4 | ✅ 已修(R8) | 开源社区经理 |
+| R8 | Docker 镜像 + docker-compose | SRE | P0-5 | ✅ 已修(R8) | SRE |
+| R8 | CI/CD 流水线 | 测试工程师 | P0-6 | ✅ 已修(R8) | 测试工程师 |
 
 ## 开放线程
 

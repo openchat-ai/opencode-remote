@@ -2,6 +2,13 @@
 import { spawn } from 'child_process';
 import { platform } from 'os';
 
+const LIUV_CRASH_PATTERNS = [
+    'Assertion failed',
+    'UV_HANDLE_CLOSING',
+    'src\\win\\async.c',
+    'libuv',
+];
+
 export class ClaudeCodeAgentAdapter {
     name = 'claude-code';
     aliases = ['cc', 'claude'];
@@ -19,9 +26,7 @@ export class ClaudeCodeAgentAdapter {
         const projectDir = options.projectDir;
         const contextualPrompt = this.buildContextualPrompt(prompt, history);
 
-        // 构建命令参数
         const args = ['--print', contextualPrompt];
-        // `cwd` is set via spawn opts below, no need for --project flag
 
         return this.callClaude(args, projectDir);
     }
@@ -32,13 +37,40 @@ export class ClaudeCodeAgentAdapter {
         return `Previous:\n${historyText}\n\n${prompt}`;
     }
 
+    isCrashNoise(line) {
+        return LIUV_CRASH_PATTERNS.some(p => line.includes(p));
+    }
+
+    extractErrorMessage(stdout, stderr, code) {
+        // 先检查 stdout：--print 模式把错误也输出到 stdout
+        const stdoutLines = stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
+        const stdoutErrors = stdoutLines.filter(l => !this.isCrashNoise(l));
+        if (stdoutErrors.length > 0) {
+            return stdoutErrors.join('\n');
+        }
+
+        // 再检查 stderr
+        const stderrLines = stderr.trim().split('\n').map(l => l.trim()).filter(Boolean);
+        const stderrReal = stderrLines.filter(l => !this.isCrashNoise(l));
+        if (stderrReal.length > 0) {
+            return stderrReal.join('\n');
+        }
+
+        // 如果全是崩溃噪音，尝试从任一流中找 Error 关键词
+        const all = [...stdoutLines, ...stderrLines];
+        const firstRelevant = all.find(l => /Error|error|ERROR|^\d{3}/.test(l));
+        if (firstRelevant) return firstRelevant;
+
+        // 兜底
+        return `进程异常退出 (code: ${code})`;
+    }
+
     callClaude(args, projectDir) {
         return new Promise((resolve) => {
             const opts = {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             };
-            // 如果指定了项目目录，在该目录下执行
             if (projectDir) {
                 opts.cwd = projectDir;
             }
@@ -57,7 +89,17 @@ export class ClaudeCodeAgentAdapter {
             proc.on('close', (code) => {
                 clearTimeout(timeout);
                 console.log(`[claude-code] Process exited with code ${code}, stdout=${stdout.length} bytes, stderr=${stderr.length} bytes`);
-                resolve(code === 0 ? stdout.trim() : `❌ Claude Code 错误: ${stderr}`);
+
+                if (code === 0) {
+                    resolve(stdout.trim());
+                    return;
+                }
+
+                const errorMsg = this.extractErrorMessage(stdout, stderr, code);
+                console.log(`[claude-code] Process failed, raw stderr:\n${stderr.trim().slice(-1000)}`);
+                console.log(`[claude-code] Error detail:\n${errorMsg}`);
+
+                resolve(`❌ Claude Code 错误 (exit code ${code}): ${errorMsg}`);
             });
             proc.on('error', (err) => {
                 clearTimeout(timeout);

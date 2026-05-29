@@ -1,6 +1,6 @@
 {
   "name": "@yvhitxcel/opencode-remote",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "🤖 AI 专家团队随时待命！只需输入 /z，自动分析项目、诊断问题、给出改进方案。支持微信/飞书/Telegram 远程控制 OpenCode、Claude Code、Codex、Copilot。手机也能搞开发。",
   "type": "module",
   "bin": {

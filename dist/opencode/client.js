@@ -398,6 +398,7 @@ export async function sendMessage(session, message, callbacks) {
         let responseText = '';
         let hasToolActivity = false;
         let idleSince = 0; // 最后一次收到新内容的时间戳
+        let lastStatus = '';
 
         while (Date.now() - startTime < TIMEOUT_MS) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -454,6 +455,7 @@ export async function sendMessage(session, message, callbacks) {
                 if (latestStatus === 'thinking' || latestStatus === 'pending_tool') {
                     idleSince = Date.now();
                 }
+                if (latestStatus) lastStatus = latestStatus;
                 if (latestStatus && latestStatus !== lastReportedStatus) {
                     lastReportedStatus = latestStatus;
                     console.log(`[AI状态] ${latestStatus}`);

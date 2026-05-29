@@ -44,6 +44,15 @@ export async function startBot() {
         }
     });
 
+    telegramAdapter.bot.on('callback_query:data', async (ctx) => {
+        if (!ctx.callbackQuery.data.startsWith('cmd:')) return;
+        const cmd = ctx.callbackQuery.data.slice(4);
+        try {
+            await ctx.answerCallbackQuery({ text: `执行: /${cmd}` });
+            const msg = await telegramAdapter.bot.api.sendMessage(ctx.chat.id, `/${cmd}`);
+        } catch (e) { console.error('[Telegram] callback error:', e.message); }
+    });
+
     telegramAdapter.bot.start().catch((err) => {
         if (telegramAdapter.isRunning) console.error('[Telegram] Polling error:', err);
     });
@@ -85,6 +94,7 @@ export async function startBot() {
                 }
                 opencodeSessionId = session.sessionId;
 
+                const taskStart = Date.now();
                 const response = await sendToOpenCode(session, parsed.prompt, {
                     onTextDelta: () => {},
                     onEvent: (event) => {
@@ -101,6 +111,8 @@ export async function startBot() {
                         if (chunk.trim()) await telegramAdapter.sendMessage(message.threadId, chunk);
                     }
                 }
+                const { formatTaskCompletion } = await import('../core/notifications.js');
+                await telegramAdapter.sendMessage(message.threadId, formatTaskCompletion('AI 任务', taskStart));
                 return;
             }
 
@@ -111,7 +123,12 @@ export async function startBot() {
 
             await telegramAdapter.sendTyping(message.threadId, false);
             if (typeof result === 'string') {
-                await telegramAdapter.sendMessage(message.threadId, result);
+                if (parsed.type === 'command' && (parsed.command === 'help' || parsed.command === 'start')) {
+                    await telegramAdapter.sendMessage(message.threadId, result);
+                    await telegramAdapter.sendCommandMenu(message.threadId, '📱 快速选择指令：');
+                } else {
+                    await telegramAdapter.sendMessage(message.threadId, result);
+                }
             } else if (result) {
                 let full = '';
                 for await (const chunk of result) full += chunk;
