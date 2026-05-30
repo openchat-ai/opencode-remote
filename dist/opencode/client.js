@@ -11,6 +11,41 @@ import { homedir } from 'os';
 const CONFIG_DIR = join(homedir(), '.opencode-remote');
 const CONFIG_FILE = join(CONFIG_DIR, '.env');
 
+const threadModels = new Map();
+const recentModels = [];
+
+export function setThreadModel(threadId, modelStr) {
+    if (!modelStr || !modelStr.includes('/')) {
+        threadModels.delete(threadId);
+        return null;
+    }
+    const parts = modelStr.split('/');
+    const entry = { providerID: parts[0], modelID: parts.slice(1).join('/') };
+    threadModels.set(threadId, entry);
+    pushRecent(entry);
+    return entry;
+}
+
+export function getThreadModel(threadId) {
+    return threadModels.get(threadId);
+}
+
+export function getRecentModels() {
+    return [...recentModels];
+}
+
+export function pushRecentModel(entry) {
+    pushRecent(entry);
+}
+
+function pushRecent(entry) {
+    const key = `${entry.providerID}/${entry.modelID}`;
+    const idx = recentModels.findIndex(e => `${e.providerID}/${e.modelID}` === key);
+    if (idx !== -1) recentModels.splice(idx, 1);
+    recentModels.unshift(entry);
+    if (recentModels.length > 5) recentModels.length = 5;
+}
+
 // Find opencode.exe binary
 function findOpenCodeExe() {
     const isWindows = platform() === 'win32';
@@ -349,7 +384,7 @@ export async function createSession(_threadId, title = `Remote control session`)
     }
 }
 // Send message - use promptAsync then poll for response
-export async function sendMessage(session, message, callbacks) {
+export async function sendMessage(session, message, callbacks, threadId) {
     const TIMEOUT_MS = 5 * 60 * 1000; // 5 minute timeout
     const POLL_INTERVAL = 2000; // 2 seconds between polls
     
@@ -381,6 +416,11 @@ export async function sendMessage(session, message, callbacks) {
         const promptBody = {
             parts: [{ type: 'text', text: message }]
         };
+        // Inject local model preference if set
+        if (threadId && threadModels.has(threadId)) {
+            session.model = threadModels.get(threadId);
+            pushRecent(session.model);
+        }
         // Per-message model override if set on session
         if (session.model?.providerID && session.model?.modelID) {
             promptBody.model = {

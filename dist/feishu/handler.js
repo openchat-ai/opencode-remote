@@ -292,7 +292,7 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
                     adapter.updateMessage(ctx.threadId, '', `⏳ 重试中 (${status.attempt})...`).catch(() => {});
                 }
             },
-        });
+        }, ctx.threadId);
         session.taskStartTime = null;
         session.currentTool = null;
         if (session.modifiedFiles instanceof Set) {

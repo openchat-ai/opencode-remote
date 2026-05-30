@@ -1,6 +1,6 @@
 // Message router - full command definitions shared across all platforms
 import { registry } from './registry.js';
-import { initOpenCode, listProviders, updateGlobalModel, checkConnection, resumeSession, shareSession } from '../opencode/client.js';
+import { initOpenCode, checkConnection, resumeSession, shareSession, setThreadModel, getThreadModel, getRecentModels, pushRecentModel } from '../opencode/client.js';
 import { formatTaskCompletion } from './notifications.js';
 
 const demoModeMap = new Map();
@@ -499,30 +499,68 @@ export async function routeMessage(parsed, ctx) {
 
                 case 'model': {
                     try {
+                        const opencode = await initOpenCode();
+                        if (!opencode) return '❌ OpenCode 不可用';
+
                         if (parsed.arg) {
-                            const modelStr = parsed.arg.trim();
-                            const ok = await updateGlobalModel(modelStr);
-                            return ok ? `✅ 已切换模型至: ${modelStr}` : '❌ 切换失败';
-                        }
-                        const providers = await listProviders();
-                        if (!providers || providers.length === 0) return '❌ 无法获取模型列表';
-                        let msg = '🧠 可用模型:\n\n';
-                        for (const p of providers) {
-                            const modelIds = Object.keys(p.models || {});
-                            if (modelIds.length === 0) continue;
-                            msg += `${p.name} (${p.id}):\n`;
-                            for (const mid of modelIds.slice(0, 5)) {
-                                msg += `  ${p.id}/${mid}\n`;
+                            const arg = parsed.arg.trim();
+
+                            // Search mode: /model <keyword>
+                            if (!arg.includes('/')) {
+                                const result = await opencode.client.provider.list();
+                                if (result.error || !result.data?.all) return '❌ 无法获取模型列表';
+                                const q = arg.toLowerCase();
+                                const matches = [];
+                                for (const p of result.data.all) {
+                                    for (const mid of Object.keys(p.models || {})) {
+                                        const label = `${p.id}/${mid}`;
+                                        if (label.toLowerCase().includes(q)) {
+                                            matches.push(label);
+                                        }
+                                    }
+                                }
+                                if (matches.length === 0) return `🔍 未找到包含 "${arg}" 的模型`;
+                                matches.sort().splice(30);
+                                let msg = `🔍 搜索 "${arg}" (${matches.length > 30 ? '30+' : matches.length} 个):\n`;
+                                for (const m of matches.slice(0, 30)) {
+                                    msg += `  ${m}\n`;
+                                }
+                                msg += '\n切换: /model <provider>/<modelID>';
+                                return msg;
                             }
-                            if (modelIds.length > 5) msg += `  ...还有 ${modelIds.length - 5} 个\n`;
+
+                            // Switch mode: /model <provider>/<modelID>
+                            const entry = setThreadModel(ctx.threadId, arg);
+                            if (entry) {
+                                return `✅ 已切换模型至: ${entry.providerID}/${entry.modelID}`;
+                            }
+                            return '❌ 格式错误，请使用: /model <provider>/<modelID>';
                         }
-                        msg += '\n用法: /model <provider/model>';
+
+                        // No arg: show current + recent
+                        const current = getThreadModel(ctx.threadId);
+                        let msg = current
+                            ? `🧠 当前模型: ${current.providerID}/${current.modelID}\n━━━━━━━━━━━━━━━━\n\n`
+                            : '━━━━━━━━━━━━━━━━\n\n';
+                        const recent = getRecentModels();
+                        if (recent.length > 0) {
+                            msg += '最近使用:\n';
+                            for (const r of recent) {
+                                const mark = (current && r.providerID === current.providerID && r.modelID === current.modelID) ? ' ←' : '';
+                                msg += `  ${r.providerID}/${r.modelID}${mark}\n`;
+                            }
+                            msg += '\n';
+                        }
+                        if (!current) {
+                            msg += '提示: 用 /model <关键词> 搜索模型，/model <provider>/<modelID> 切换\n';
+                        } else {
+                            msg += '用法:\n  /model <关键词> — 搜索\n  /model <provider>/<modelID> — 切换';
+                        }
                         return msg;
                     } catch (e) {
                         return `❌ 模型操作失败: ${e.message}`;
                     }
                 }
-
                 case 'diagnose': {
                     const diag = ['🔍 诊断报告\n'];
                     const qiniuOk = !!process.env.QINIU_ACCESS_KEY;

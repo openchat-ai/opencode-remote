@@ -1,7 +1,7 @@
 import { getOrCreateSession } from '../core/session.js';
 import { splitMessage } from '../core/notifications.js';
 import { EMOJI } from '../core/types.js';
-import { initOpenCode, createSession, sendMessage, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, listProviders, updateGlobalModel } from '../opencode/client.js';
+import { initOpenCode, createSession, sendMessage, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, setThreadModel, getThreadModel, getRecentModels } from '../opencode/client.js';
 import { claimOwnership } from '../core/auth.js';
 import { COMMAND_ALIASES, detectCommand, getHelpText, DEMO_RESPONSES, setDemoMode, isDemoMode } from '../core/router.js';
 import { registry } from '../core/registry.js';
@@ -110,43 +110,77 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             try {
                 if (arg) {
                     const modelStr = arg.trim();
-                    const ok = await updateGlobalModel(modelStr);
-                    if (ok) {
-                        const parts = modelStr.split('/');
-                        if (parts.length === 2) {
-                            session.modelOverride = { providerID: parts[0], modelID: parts[1] };
+
+                    // Search mode: /model <keyword>
+                    if (!modelStr.includes('/')) {
+                        const opencode = await initOpenCode();
+                        if (!opencode) {
+                            await adapter.reply(ctx.threadId, '❌ OpenCode 不可用');
+                            return true;
                         }
-                        await adapter.reply(ctx.threadId, `✅ 已切换模型至: ${modelStr}`);
+                        const result = await opencode.client.provider.list();
+                        if (result.error || !result.data?.all) {
+                            await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
+                            return true;
+                        }
+                        const q = modelStr.toLowerCase();
+                        const matches = [];
+                        for (const p of result.data.all) {
+                            for (const mid of Object.keys(p.models || {})) {
+                                if (`${p.id}/${mid}`.toLowerCase().includes(q)) {
+                                    matches.push(`${p.id}/${mid}`);
+                                }
+                            }
+                        }
+                        if (matches.length === 0) {
+                            await adapter.reply(ctx.threadId, `🔍 未找到包含 "${modelStr}" 的模型`);
+                            return true;
+                        }
+                        matches.sort();
+                        let msg = `🔍 搜索 "${modelStr}" (${matches.length} 个):\n`;
+                        for (const m of matches.slice(0, 30)) {
+                            msg += `  ${m}\n`;
+                        }
+                        msg += '\n切换: /model <provider>/<modelID>';
+                        const msgs = splitMessage(msg);
+                        for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                        return true;
+                    }
+
+                    const entry = setThreadModel(ctx.threadId, modelStr);
+                    if (entry) {
+                        await adapter.reply(ctx.threadId, `✅ 已切换模型至: ${entry.providerID}/${entry.modelID}`);
                     } else {
-                        await adapter.reply(ctx.threadId, '❌ 切换模型失败，请检查模型名称是否正确');
+                        await adapter.reply(ctx.threadId, '❌ 格式错误，请使用: /model <provider>/<modelID>');
                     }
                     return true;
                 }
-                const providers = await listProviders();
-                if (!providers || providers.length === 0) {
-                    await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
-                    return true;
-                }
-                let msg = '🧠 可用模型:\n\n';
-                for (const p of providers) {
-                    const modelIds = Object.keys(p.models || {});
-                    if (modelIds.length === 0) continue;
-                    msg += `${p.name} (${p.id}):\n`;
-                    for (const mid of modelIds.slice(0, 5)) {
-                        msg += `  ${p.id}/${mid}\n`;
+                const current = getThreadModel(ctx.threadId);
+                let msg = current
+                    ? `🧠 当前模型: ${current.providerID}/${current.modelID}\n\n`
+                    : '';
+
+                const recent = getRecentModels();
+                if (recent.length > 0) {
+                    msg += '最近使用:\n';
+                    for (const r of recent) {
+                        const mark = (current && r.providerID === current.providerID && r.modelID === current.modelID) ? ' ←' : '';
+                        msg += `  ${r.providerID}/${r.modelID}${mark}\n`;
                     }
-                    if (modelIds.length > 5) msg += `  ...还有 ${modelIds.length - 5} 个\n`;
                     msg += '\n';
                 }
-                msg += '用法: /model <provider/model>';
-                const msgs = splitMessage(msg);
-                for (const m of msgs) {
-                    await adapter.reply(ctx.threadId, m);
+                if (!current) {
+                    msg += '提示: 用 /model <关键词> 搜索模型，/model <provider>/<modelID> 切换\n';
+                } else {
+                    msg += '用法: /model <关键词> — 搜索\n  /model <provider>/<modelID> — 切换';
                 }
+                const msgs = splitMessage(msg);
+                for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                return true;
             } catch (e) {
                 await adapter.reply(ctx.threadId, `❌ 模型操作失败: ${e.message}`);
+                return true;
             }
-            return true;
         }
         case 'oc':
         case 'cc':

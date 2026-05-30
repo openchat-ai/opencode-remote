@@ -26,6 +26,7 @@ export function loadConfig() {
 
     const appSecret = content.match(/FEISHU_APP_SECRET=(.+)/)?.[1]?.trim();
     if (appSecret) config.feishuAppSecret = appSecret;
+
   }
 
   // 2. Read ./.env (local project, lower priority)
@@ -56,6 +57,5 @@ export function loadConfig() {
   if (process.env.SESSION_IDLE_TIMEOUT_MS) config.sessionIdleTimeoutMs = parseInt(process.env.SESSION_IDLE_TIMEOUT_MS, 10);
   if (process.env.CLEANUP_INTERVAL_MS) config.cleanupIntervalMs = parseInt(process.env.CLEANUP_INTERVAL_MS, 10);
   if (process.env.APPROVAL_TIMEOUT_MS) config.approvalTimeoutMs = parseInt(process.env.APPROVAL_TIMEOUT_MS, 10);
-
   return config;
 }

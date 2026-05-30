@@ -138,7 +138,7 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
         onStatusChange: (status) => {
             if (status.hasToolActivity) hasToolActivity = true;
         },
-    }).catch((e) => {
+    }, ctx.threadId).catch((e) => {
         console.error('[forwardToOpenCode] Task error:', e.message);
         return '';
     });
