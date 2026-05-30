@@ -1,9 +1,18 @@
 # Changelog
 
-## v0.16.2 (2026-05-29)
+## v0.16.3 (2026-05-29)
 
 ### 🐛 Fixed
-- oc/cx/copilot 指令统一修复错误捕获：所有 agent 非零退出时从 stdout+stderr 提取真实错误，过滤 libuv 崩溃噪音
+- CC/OC/Codex/Copilot 错误捕获：从 stdout+stderr 提取真实错误，过滤 libuv 崩溃噪音
+- OpenCode 卡死检测：实时监控 stderr 匹配 quota/retry/429 等模式，立即终止并返回错误
+
+### ✨ Improved
+- `/model` 指令重做：本地存储模型偏好，支持搜索 `/model v4`，显示最近使用
+- 模型切换通过 `session.model` 注入请求，不依赖 OpenCode 全局配置
+
+---
+
+## v0.16.2 (2026-05-29)
 
 ---
 
