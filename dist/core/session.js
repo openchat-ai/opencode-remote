@@ -182,8 +182,6 @@ class SessionManager {
             if (session.projectDir === undefined) session.projectDir = undefined;
             if (session.ttl === undefined) session.ttl = DEFAULT_TTL;
             if (session.opencodeSessionId === undefined) session.opencodeSessionId = undefined;
-            // Don't persist agent switch across restarts; default to opencode
-            session.currentAgent = undefined;
             return session;
         } catch {
             return undefined;
@@ -297,11 +295,18 @@ export async function saveSessionCommandHistory(threadId, commandHistory) {
     
     session.commandHistory = existing;
     session.lastActivity = new Date();
-    
+
+    // Preserve in-memory currentAgent (loadSession may have just read a stale
+    // snapshot; do not clobber the live agent switch with disk data).
+    const inMemory = sessions.get(threadId) || sessionManager.sessions.get(key);
+    if (inMemory?.currentAgent) {
+        session.currentAgent = inMemory.currentAgent;
+    }
+
     // Update in-memory maps
     sessions.set(threadId, session);
     sessionManager.sessions.set(key, session);
-    
+
     // Save to disk
     await sessionManager.saveSession(key, session);
 }
@@ -370,6 +375,7 @@ export function saveSessionMapping() {
                     modifiedFiles: session.modifiedFiles || [],
                     projectDir: session.projectDir || null,
                     modelOverride: session.modelOverride || null,
+                    currentAgent: session.currentAgent || null,
                 };
 
                 // Also save full session to disk via sessionManager
