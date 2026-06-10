@@ -467,14 +467,12 @@ export async function sendMessage(session, message, callbacks, threadId) {
                 }
 
                 // 收集所有新的 assistant 回复（累加，不丢内容）
-                if (lastMsgId) {
-                    const idx = messages.findIndex(m => m.info?.id === lastMsgId);
-                    // Fallback to msgCountBefore if lastMsgId disappeared (session restart/rotation):
-                    // start from the newer of (lastMsgId position + 1) or (msgCountBefore).
-                    const idxBased = idx >= 0 ? idx + 1 : messages.length;
-                    const startIdx = Math.max(idxBased, msgCountBefore);
-                    if (idx < 0 && messages.length > msgCountBefore) {
-                        console.warn(`[sendMessage] lastMsgId ${lastMsgId?.slice(0,8)} not found in ${messages.length} messages; using msgCountBefore=${msgCountBefore} as fallback`);
+                // Always collect from msgCountBefore onwards; use lastMsgId only to skip already-known tail.
+                {
+                    let startIdx = msgCountBefore;
+                    if (lastMsgId) {
+                        const idx = messages.findIndex(m => m.info?.id === lastMsgId);
+                        if (idx >= 0) startIdx = Math.max(startIdx, idx + 1);
                     }
                     const newParts = [];
                     for (let i = startIdx; i < messages.length; i++) {
@@ -496,23 +494,30 @@ export async function sendMessage(session, message, callbacks, threadId) {
                     }
                 }
 
-                // 检查 AI 是否还在忙（thinking/pending_tool 说明还没干完）
-                const latestStatus = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1]?.info?.status : '';
-                if (latestStatus && latestStatus !== 'idle' && latestStatus !== 'done' && latestStatus !== '') {
+                // 检查 AI 是否还在忙: 看最后一条 assistant 消息是否有 finish 标记。
+                // OC 这个版本没有 info.status 字段，用 info.finish ('stop' 表示完成) + time.completed 判断。
+                const lastMsg = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1] : null;
+                const lastInfo = lastMsg?.info || {};
+                const isAssistant = lastInfo.role === 'assistant';
+                const isFinished = isAssistant && (lastInfo.finish === 'stop' || lastInfo.finish === 'done' || lastInfo.time?.completed);
+                const isBusy = isAssistant && !isFinished;
+                if (isBusy) {
+                    idleSince = Date.now();
+                } else if (isFinished && idleSince === 0 && responseText) {
+                    // AI completed before any new content arrived: start idle clock from completion
                     idleSince = Date.now();
                 }
-                if (latestStatus) lastStatus = latestStatus;
-                if (latestStatus && latestStatus !== lastReportedStatus) {
-                    lastReportedStatus = latestStatus;
-                    console.log(`[AI状态] ${latestStatus}`);
+                if (isFinished) lastStatus = 'finished';
+                else if (isAssistant) lastStatus = 'busy';
+                if (lastStatus && lastStatus !== lastReportedStatus) {
+                    lastReportedStatus = lastStatus;
+                    console.log(`[AI状态] ${lastStatus} (finish=${lastInfo.finish || '?'})`);
                 }
 
-                // 有回复后：等 120 秒无新内容且 AI 不忙才退出（工具执行可能很久）
-                if (responseText && Date.now() - idleSince > 120000) {
+                // 退出条件: AI 完成 且 (有回复 且 5s 内无新内容) — 短 grace 让流式收尾
+                if (responseText && !isBusy && Date.now() - idleSince > 5000) {
                     break;
                 }
-
-                // 硬上限保护：5 分钟到了但已有内容 + AI 状态非空闲 → 视为超时
                 if (responseText && Date.now() - startTime > TIMEOUT_MS) {
                     console.warn(`[sendMessage] 5min hard timeout with partial response (status=${lastStatus}), aborting poll`);
                     return responseText;
