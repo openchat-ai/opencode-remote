@@ -66,6 +66,7 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
     } else {
         openCodeSession = openCodeSessions.get(ctx.threadId);
         if (!openCodeSession) {
+            console.log(`[forwardToOpenCode] thread=${ctx.threadId} memory miss, session.opencodeSessionId=${session.opencodeSessionId || 'null'}, latest=${globalThis.__latestOpenCodeSession?.id?.slice(0,8) || 'null'}`);
             if (session.opencodeSessionId) openCodeSession = await resumeSession(session.opencodeSessionId);
             if (!openCodeSession && globalThis.__latestOpenCodeSession?.id) openCodeSession = await resumeSession(globalThis.__latestOpenCodeSession.id);
             if (!openCodeSession) {
@@ -73,8 +74,10 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
                 if (mapping[ctx.threadId]?.opencodeSessionId) openCodeSession = await resumeSession(mapping[ctx.threadId].opencodeSessionId);
             }
             if (!openCodeSession) {
+                console.log(`[forwardToOpenCode] no resumable session, creating new for thread=${ctx.threadId}`);
                 openCodeSession = await createSession(ctx.threadId, `Weixin ${ctx.threadId}`);
                 if (!openCodeSession) { await adapter.reply(ctx.threadId, '❌ 无法创建 OpenCode 会话'); return; }
+                console.log(`[forwardToOpenCode] created new session=${openCodeSession.sessionId.slice(0,8)} for thread=${ctx.threadId}`);
             }
             openCodeSessions.set(ctx.threadId, openCodeSession);
             session.opencodeSessionId = openCodeSession.sessionId;

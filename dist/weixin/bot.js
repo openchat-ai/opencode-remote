@@ -72,7 +72,6 @@ export async function startWeixinBot(botConfig, restartFn) {
 
     await registry.loadBuiltInPlugins();
 
-    try { await initFetchConfig(); } catch (e) { console.warn('⚠️ Fetch config failed:', e); }
     let credentials = loadWeixinCredentials();
     if (!credentials) {
         console.log('No saved credentials. Starting login...');

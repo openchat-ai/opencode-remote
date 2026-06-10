@@ -53,7 +53,14 @@ async function apiFetch(params) {
     }
     catch (err) {
         clearTimeout(t);
-        console.error(`[apiFetch] ${params.label} error:`, err.message);
+        const details = {
+            url: url.toString(),
+            label: params.label,
+            message: err.message,
+            cause: err.cause ? (err.cause.message || String(err.cause)) : undefined,
+            code: err.code,
+        };
+        console.error(`[apiFetch] ${params.label} error:`, JSON.stringify(details));
         throw err;
     }
 }

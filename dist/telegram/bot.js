@@ -3,6 +3,7 @@ import { sessionManager } from '../core/session.js';
 import { initOpenCode, createSession, sendMessage as sendToOpenCode, checkConnection } from '../opencode/client.js';
 import { parseMessage, routeMessage } from '../core/router.js';
 import { telegramAdapter } from './adapter.js';
+import { splitMessage } from '../utils/message-split.js';
 
 export async function startBot() {
     const { loadConfig } = await import('../core/config.js');
