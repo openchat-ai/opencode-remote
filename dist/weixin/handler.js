@@ -66,9 +66,8 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
     } else {
         openCodeSession = openCodeSessions.get(ctx.threadId);
         if (!openCodeSession) {
-            console.log(`[forwardToOpenCode] thread=${ctx.threadId} memory miss, session.opencodeSessionId=${session.opencodeSessionId || 'null'}, latest=${globalThis.__latestOpenCodeSession?.id?.slice(0,8) || 'null'}`);
+            console.log(`[forwardToOpenCode] thread=${ctx.threadId} memory miss, session.opencodeSessionId=${session.opencodeSessionId || 'null'}`);
             if (session.opencodeSessionId) openCodeSession = await resumeSession(session.opencodeSessionId);
-            if (!openCodeSession && globalThis.__latestOpenCodeSession?.id) openCodeSession = await resumeSession(globalThis.__latestOpenCodeSession.id);
             if (!openCodeSession) {
                 const mapping = loadSessionMapping();
                 if (mapping[ctx.threadId]?.opencodeSessionId) openCodeSession = await resumeSession(mapping[ctx.threadId].opencodeSessionId);
@@ -351,7 +350,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                         saveSessionMapping();
                         if (target.directory) {
                             session.projectDir = target.directory;
-                            globalThis.__autoProjectDir = target.directory;
                         }
                         await adapter.reply(ctx.threadId, `✅ 已切换到: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                     } else {
@@ -389,7 +387,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                     saveSessionMapping();
                     if (target.directory) {
                         session.projectDir = target.directory;
-                        globalThis.__autoProjectDir = target.directory;
                     }
                     await adapter.reply(ctx.threadId, `✅ 已切换到: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                 } else {

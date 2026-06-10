@@ -95,7 +95,6 @@ export async function startWeixinBot(botConfig, restartFn) {
                 const sorted = result.data.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
                 const latest = sorted[0];
                 console.log(`Latest OpenCode session: ${latest.title || 'Untitled'} (${latest.id.slice(0, 8)}...)`);
-                globalThis.__latestOpenCodeSession = { id: latest.id, directory: latest.directory };
                 if (latest.directory) {
                     console.log(`Project directory: ${latest.directory}`);
                     globalThis.__autoProjectDir = latest.directory;

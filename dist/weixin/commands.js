@@ -301,7 +301,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
 
                 if (latest.directory) {
                     session.projectDir = latest.directory;
-                    globalThis.__autoProjectDir = latest.directory;
                 }
                 
                 await adapter.reply(ctx.threadId, `✅ 已恢复最近会话\n\n会话: ${latest.title || 'Untitled'}\n📁 目录: ${latest.directory || 'N/A'}\n📝 更新: ${new Date(latest.time.updated).toLocaleString()}`);

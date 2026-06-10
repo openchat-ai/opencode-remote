@@ -120,7 +120,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                         session.modifiedFiles = null;
                         if (target.directory) {
                             session.projectDir = target.directory;
-                            globalThis.__autoProjectDir = target.directory;
                         }
                         await adapter.reply(ctx.threadId, `✅ 已切换至: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                     } else {
@@ -156,7 +155,6 @@ async function handleMessage(adapter, ctx, text, openCodeSessions) {
                     session.modifiedFiles = null;
                     if (target.directory) {
                         session.projectDir = target.directory;
-                        globalThis.__autoProjectDir = target.directory;
                     }
                     await adapter.reply(ctx.threadId, `✅ 已切换至: ${target.title || '无标题'}\nID: ${resumed.sessionId.slice(0, 8)}...`);
                 } else {
@@ -218,9 +216,6 @@ async function forwardToOpenCode(adapter, ctx, text, openCodeSessions, session, 
     if (!openCodeSession) {
         if (session.opencodeSessionId) {
             openCodeSession = await resumeSession(session.opencodeSessionId);
-        }
-        if (!openCodeSession && globalThis.__latestOpenCodeSession?.id) {
-            openCodeSession = await resumeSession(globalThis.__latestOpenCodeSession.id);
         }
         if (!openCodeSession) {
             openCodeSession = await createSession(ctx.threadId, `Feishu ${ctx.threadId}`);
