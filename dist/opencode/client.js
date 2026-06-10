@@ -469,7 +469,13 @@ export async function sendMessage(session, message, callbacks, threadId) {
                 // 收集所有新的 assistant 回复（累加，不丢内容）
                 if (lastMsgId) {
                     const idx = messages.findIndex(m => m.info?.id === lastMsgId);
-                    const startIdx = idx >= 0 ? idx + 1 : 0;
+                    // Fallback to msgCountBefore if lastMsgId disappeared (session restart/rotation):
+                    // start from the newer of (lastMsgId position + 1) or (msgCountBefore).
+                    const idxBased = idx >= 0 ? idx + 1 : messages.length;
+                    const startIdx = Math.max(idxBased, msgCountBefore);
+                    if (idx < 0 && messages.length > msgCountBefore) {
+                        console.warn(`[sendMessage] lastMsgId ${lastMsgId?.slice(0,8)} not found in ${messages.length} messages; using msgCountBefore=${msgCountBefore} as fallback`);
+                    }
                     const newParts = [];
                     for (let i = startIdx; i < messages.length; i++) {
                         const msg = messages[i];
@@ -492,7 +498,7 @@ export async function sendMessage(session, message, callbacks, threadId) {
 
                 // 检查 AI 是否还在忙（thinking/pending_tool 说明还没干完）
                 const latestStatus = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1]?.info?.status : '';
-                if (latestStatus === 'thinking' || latestStatus === 'pending_tool') {
+                if (latestStatus && latestStatus !== 'idle' && latestStatus !== 'done' && latestStatus !== '') {
                     idleSince = Date.now();
                 }
                 if (latestStatus) lastStatus = latestStatus;
@@ -501,9 +507,15 @@ export async function sendMessage(session, message, callbacks, threadId) {
                     console.log(`[AI状态] ${latestStatus}`);
                 }
 
-                // 有回复后：等 30 秒无新内容且 AI 不忙才退出
-                if (responseText && Date.now() - idleSince > 30000) {
+                // 有回复后：等 120 秒无新内容且 AI 不忙才退出（工具执行可能很久）
+                if (responseText && Date.now() - idleSince > 120000) {
                     break;
+                }
+
+                // 硬上限保护：5 分钟到了但已有内容 + AI 状态非空闲 → 视为超时
+                if (responseText && Date.now() - startTime > TIMEOUT_MS) {
+                    console.warn(`[sendMessage] 5min hard timeout with partial response (status=${lastStatus}), aborting poll`);
+                    return responseText;
                 }
             } catch (e) {
                 console.warn('Poll error:', e.message);
