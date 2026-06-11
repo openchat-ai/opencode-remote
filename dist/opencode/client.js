@@ -437,7 +437,8 @@ export async function sendMessage(session, message, callbacks, threadId) {
         const startTime = Date.now();
         let responseText = '';
         let hasToolActivity = false;
-        let idleSince = 0; // 最后一次收到新内容的时间戳
+        let idleSince = startTime; // 最后一次收到新内容 / AI 完成的时间戳
+        let hasAssistant = false;
         let lastStatus = '';
 
         while (Date.now() - startTime < TIMEOUT_MS) {
@@ -490,20 +491,23 @@ export async function sendMessage(session, message, callbacks, threadId) {
                         callbacks?.onTextDelta?.(delta);
                         callbacks?.onNewContent?.(delta);
                         idleSince = Date.now();
+                        hasAssistant = true;
                         continue;
                     }
                 }
 
                 // 检查 AI 是否还在忙: 看最后一条 assistant 消息是否有 finish 标记。
-                // OC 这个版本没有 info.status 字段，用 info.finish ('stop' 表示完成) + time.completed 判断。
+                // OC 这个版本没有 info.status 字段，用 info.finish + time.completed 判断。
+                // 只要 finish 有值（stop/error/failed/cancelled 等）就算完成。
                 const lastMsg = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1] : null;
                 const lastInfo = lastMsg?.info || {};
                 const isAssistant = lastInfo.role === 'assistant';
-                const isFinished = isAssistant && (lastInfo.finish === 'stop' || lastInfo.finish === 'done' || lastInfo.time?.completed);
+                if (isAssistant) hasAssistant = true;
+                const isFinished = isAssistant && (lastInfo.finish || lastInfo.time?.completed);
                 const isBusy = isAssistant && !isFinished;
                 if (isBusy) {
                     idleSince = Date.now();
-                } else if (isFinished && idleSince === 0 && responseText) {
+                } else if (isFinished && idleSince === startTime && responseText) {
                     // AI completed before any new content arrived: start idle clock from completion
                     idleSince = Date.now();
                 }
@@ -514,13 +518,18 @@ export async function sendMessage(session, message, callbacks, threadId) {
                     console.log(`[AI状态] ${lastStatus} (finish=${lastInfo.finish || '?'})`);
                 }
 
-                // 退出条件: AI 完成 且 (有回复 且 5s 内无新内容) — 短 grace 让流式收尾
-                if (responseText && !isBusy && Date.now() - idleSince > 5000) {
+                // 退出条件: 只有 assistant 已出现且不再忙时才考虑 break
+                if (hasAssistant && !isBusy && Date.now() - idleSince > 5000) {
+                    // 兜底: 如果 onNewContent 从未触发（如纯错误响应），直接从消息提取文本
+                    if (!responseText && lastMsg) {
+                        const textParts = lastMsg.parts?.filter(p => p.type === 'text' && p.text).map(p => p.text) || [];
+                        responseText = textParts.join('\n');
+                    }
                     break;
                 }
-                if (responseText && Date.now() - startTime > TIMEOUT_MS) {
-                    console.warn(`[sendMessage] 5min hard timeout with partial response (status=${lastStatus}), aborting poll`);
-                    return responseText;
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                    console.warn(`[sendMessage] 5min hard timeout (status=${lastStatus}), aborting poll`);
+                    return responseText || '⏰ 请求超时，请重试';
                 }
             } catch (e) {
                 console.warn('Poll error:', e.message);
