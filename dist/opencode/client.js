@@ -440,6 +440,7 @@ export async function sendMessage(session, message, callbacks, threadId) {
         let idleSince = startTime; // 最后一次收到新内容 / AI 完成的时间戳
         let hasAssistant = false;
         let lastStatus = '';
+        let assistantStuckAt = 0; // assistant 首次出现忙状态且无内容的时间戳
 
         while (Date.now() - startTime < TIMEOUT_MS) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL));
@@ -507,15 +508,26 @@ export async function sendMessage(session, message, callbacks, threadId) {
                 const isBusy = isAssistant && !isFinished;
                 if (isBusy) {
                     idleSince = Date.now();
+                    // Track assistant stuck without any content for too long
+                    if (!responseText && assistantStuckAt === 0) assistantStuckAt = Date.now();
                 } else if (isFinished && idleSince === startTime && responseText) {
                     // AI completed before any new content arrived: start idle clock from completion
                     idleSince = Date.now();
+                } else {
+                    assistantStuckAt = 0; // not busy or finished → not stuck
                 }
                 if (isFinished) lastStatus = 'finished';
                 else if (isAssistant) lastStatus = 'busy';
                 if (lastStatus && lastStatus !== lastReportedStatus) {
                     lastReportedStatus = lastStatus;
                     console.log(`[AI状态] ${lastStatus} (finish=${lastInfo.finish || '?'})`);
+                }
+
+                // 超时: assistant 忙 >60s 且无任何内容 → 模型可能卡死（限频/额度/网络）
+                if (assistantStuckAt > 0 && Date.now() - assistantStuckAt > 60000) {
+                    console.warn(`[sendMessage] Assistant stuck busy for >60s, no content`);
+                    callbacks?.onNewContent?.('⚠️ AI 模型长时间无响应，可能是额度不足或网络问题，请检查模型状态或重试');
+                    return '⚠️ AI 模型无响应（超过 60 秒未返回内容）';
                 }
 
                 // 退出条件: 只有 assistant 已出现且不再忙时才考虑 break
