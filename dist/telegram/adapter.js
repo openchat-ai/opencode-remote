@@ -38,12 +38,9 @@ export class TelegramAdapter {
     async sendCommandMenu(threadId, title) {
         if (!this.bot) return;
         const groups = [
-            ['🟢 常用', ['/help', '/status', '/start', '/reset']],
-            ['🔄 任务', ['/loop', '/refresh', '/restart']],
-            ['🤖 AI', ['/model', '/agents', '/oc', '/cc']],
-            ['🧠 专家', ['/tutorial', '/z', '/diagnose']],
-            ['📂 会话', ['/sessions', '/delsessions', '/copy', '/revert']],
-            ['⬆️ 文件', ['/upload', '/delete']],
+            ['/help', '/start', '/reset', '/diagnose'],
+            ['/restart', '/model', '/oc', '/cc'],
+            ['/cx', '/copilot'],
         ];
         const keyboard = [];
         for (const [, cmds] of groups) {

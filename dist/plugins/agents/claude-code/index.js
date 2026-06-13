@@ -24,9 +24,13 @@ export class ClaudeCodeAgentAdapter {
 
     async sendPrompt(_sessionId, prompt, history, options = {}) {
         const projectDir = options.projectDir;
-        const contextualPrompt = this.buildContextualPrompt(prompt, history);
+        let cleanPrompt = prompt;
+        if (prompt.startsWith('-c')) {
+            cleanPrompt = prompt.slice(2).trim();
+        }
+        const contextualPrompt = this.buildContextualPrompt(cleanPrompt, history);
 
-        const args = ['--print', contextualPrompt];
+        const args = ['--print', '-c', contextualPrompt];
 
         return this.callClaude(args, projectDir);
     }

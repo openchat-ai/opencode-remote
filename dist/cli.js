@@ -47,17 +47,9 @@ Multi-Bot Support:
 Weixin Bot Commands (send in WeChat):
   /start — Claim ownership
   /help — Show all commands
-  /status — Check connection
-  /stop — Interrupt task
   /reset — Reset session
   /restart — Restart bot
-  /sessions — Browse sessions
-  /delsessions — Delete sessions
-  /loop — Loop task
-  /refresh — Refresh context
-  /copy — Copy latest reply
-  /revert — Undo last message
-  /upload — Upload build artifacts
+  /diagnose — System diagnostics
   /model — Switch AI model
 
 Multi-Agent Commands:
@@ -65,7 +57,6 @@ Multi-Agent Commands:
   /cc <prompt> — Use Claude Code
   /cx <prompt> — Use Codex
   /copilot <prompt> — Use GitHub Copilot
-  /agents — List all available agents
 
 Examples:
   opencode-remote              # Start all bots

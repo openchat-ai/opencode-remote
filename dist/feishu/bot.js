@@ -1,5 +1,4 @@
 import * as lark from '@larksuiteoapi/node-sdk';
-import { initSessionManager } from '../core/session.js';
 import { initOpenCode } from '../opencode/client.js';
 import { getAuthStatus } from '../core/auth.js';
 import { createFeishuAdapter } from './adapter.js';
@@ -46,7 +45,6 @@ export async function startFeishuBot(botConfig) {
         appId: config.feishuAppId,
         appSecret: config.feishuAppSecret,
     });
-    initSessionManager(config);
     openCodeSessions = new Map();
     console.log('🔧 正在初始化 OpenCode...');
     try {

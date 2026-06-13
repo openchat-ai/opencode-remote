@@ -53,7 +53,7 @@ export const TEMPLATES = {
     botStarted: () => formatNotification({
         type: 'started',
         title: 'OpenCode Remote Control ready',
-        actions: ['💬 Send a prompt to start', '/help — commands', '/status — connection']
+        actions: ['💬 Send a prompt to start', '/help — commands', '/diagnose — diagnostics']
     }),
     sessionExpired: () => formatNotification({
         type: 'expired',
@@ -81,7 +81,7 @@ export const TEMPLATES = {
         type: 'error',
         title: 'OpenCode is offline',
         details: 'Cannot connect to OpenCode server.',
-        actions: ['🔄 /retry — check again', '/status — diagnostics']
+        actions: ['🔄 /retry — check again', '/diagnose — diagnostics']
     }),
     thinking: () => formatNotification({
         type: 'loading',

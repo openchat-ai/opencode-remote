@@ -23,10 +23,14 @@ export class OpenCodeAgentAdapter {
     }
     
     async sendPrompt(_sessionId, prompt, history, options = {}) {
-        const contextualPrompt = this.buildContextualPrompt(prompt, history);
+        let cleanPrompt = prompt;
+        if (prompt.startsWith('-c')) {
+            cleanPrompt = prompt.slice(2).trim();
+        }
+        const contextualPrompt = this.buildContextualPrompt(cleanPrompt, history);
         return this.callOpenCode(contextualPrompt);
     }
-    
+
     buildContextualPrompt(prompt, history) {
         if (!history || history.length === 0) return prompt;
         const historyText = history
@@ -34,7 +38,7 @@ export class OpenCodeAgentAdapter {
             .join('\n\n');
         return `Previous conversation:\n${historyText}\n\nCurrent request: ${prompt}`;
     }
-    
+
     extractErrorMessage(stdout, stderr) {
         const lines = [...stdout.trim().split('\n'), ...stderr.trim().split('\n')]
             .map(l => l.trim()).filter(Boolean)
@@ -45,10 +49,10 @@ export class OpenCodeAgentAdapter {
             .find(l => /Error|error|ERROR|^\d{3}/.test(l));
         return first || null;
     }
-    
+
     callOpenCode(prompt) {
         return new Promise((resolve) => {
-            const proc = spawn('opencode', ['run', '--format', 'json', prompt], {
+            const proc = spawn('opencode', ['run', '--format', 'json', '-c', prompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             });

@@ -13,7 +13,23 @@ const CONFIG_FILE = join(CONFIG_DIR, '.env');
 
 const threadModels = new Map();
 const recentModels = [];
+let rawDebugEnabled = false;
+let thinkVisibleEnabled = false;
 
+export function setRawDebug(enabled) {
+    rawDebugEnabled = enabled;
+    console.log(`[rawDebug] ${enabled ? 'ON' : 'OFF'}`);
+}
+export function isRawDebug() {
+    return rawDebugEnabled || process.env.DEBUG_RAW === '1';
+}
+export function setThinkVisible(enabled) {
+    thinkVisibleEnabled = enabled;
+    console.log(`[think] ${enabled ? 'ON' : 'OFF'}`);
+}
+export function isThinkVisible() {
+    return thinkVisibleEnabled;
+}
 export function setThreadModel(threadId, modelStr) {
     if (!modelStr || !modelStr.includes('/')) {
         threadModels.delete(threadId);
@@ -209,7 +225,6 @@ let opencodeInstance = null;
 let opencodeServer = null;
 let lastStdoutTime = 0;
 let lastStdoutLine = '';
-let lastReportedStatus = '';
 const PORTS_TO_TRY = [4096, 4097, 4098];
 
 // TCP-level port probe: true = occupied, false = free
@@ -225,7 +240,7 @@ function probeTCP(port, timeoutMs = 2000) {
 }
 
 async function tryConnectPort(port, timeoutMs = 5000) {
-    const { createOpencodeClient } = await import('@opencode-ai/sdk');
+    const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
     const client = createOpencodeClient({ baseUrl: `http://localhost:${port}` });
     const result = await Promise.race([
         client.session.list(),
@@ -290,7 +305,7 @@ export async function initOpenCode() {
             opencodeServer.on('exit', (code) => console.log(`[opencode] exited with code ${code}`));
 
             // Wait for server to be ready
-            const { createOpencodeClient } = await import('@opencode-ai/sdk');
+            const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
             for (let i = 0; i < 15; i++) {
                 await new Promise(r => setTimeout(r, 1000));
                 try {
@@ -353,7 +368,7 @@ export async function createSession(_threadId, title = `Remote control session`)
     const opencode = await initOpenCode();
     try {
         const createResult = await opencode.client.session.create({
-            body: { title },
+            title,
         });
         if (createResult.error) {
             console.error('Failed to create session:', createResult.error);
@@ -364,7 +379,7 @@ export async function createSession(_threadId, title = `Remote control session`)
         let shareUrl;
         if (process.env.SHARE_SESSIONS === 'true') {
             const shareResult = await opencode.client.session.share({
-                path: { id: sessionId }
+                sessionID: sessionId,
             });
             if (!shareResult.error && shareResult.data?.share?.url) {
                 shareUrl = shareResult.data.share.url;
@@ -385,13 +400,12 @@ export async function createSession(_threadId, title = `Remote control session`)
 }
 // Send message - use promptAsync then poll for response
 export async function sendMessage(session, message, callbacks, threadId) {
-    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minute timeout
-    const POLL_INTERVAL = 2000; // 2 seconds between polls
-    
+    const TIMEOUT_MS = 5 * 60 * 1000;
+
     try {
         // Verify session is valid first
         try {
-            const sessionCheck = await session.client.session.get({ path: { id: session.sessionId } });
+            const sessionCheck = await session.client.session.get({ sessionID: session.sessionId });
             if (sessionCheck.error) {
                 console.error('[sendMessage] Session error:', sessionCheck.error);
                 return '❌ 会话无效，请发送 /restart 重启';
@@ -400,19 +414,8 @@ export async function sendMessage(session, message, callbacks, threadId) {
             console.error('[sendMessage] Session check failed:', e.message);
             return '❌ 会话连接失败，请发送 /restart 重启';
         }
-        
-        // Get last message ID and count before sending
-        let lastMsgId = null;
-        let msgCountBefore = 0;
-        try {
-            const msgsBefore = await session.client.session.messages({ path: { id: session.sessionId } });
-            if (msgsBefore.data?.length > 0) {
-                lastMsgId = msgsBefore.data[msgsBefore.data.length - 1].info?.id;
-                msgCountBefore = msgsBefore.data.length;
-            }
-        } catch { /* ignore */ }
-        
-        // Send message using promptAsync (non-blocking)
+
+        // Build prompt body
         const promptBody = {
             parts: [{ type: 'text', text: message }]
         };
@@ -428,162 +431,101 @@ export async function sendMessage(session, message, callbacks, threadId) {
                 modelID: session.model.modelID,
             };
         }
-        const sendResult = await session.client.session.promptAsync({
-            path: { id: session.sessionId },
-            body: promptBody,
-        });
 
-        // Poll for new response - keep going as long as new content keeps arriving
-        const startTime = Date.now();
-        let responseText = '';
-        let hasToolActivity = false;
-        let idleSince = startTime; // 最后一次收到新内容 / AI 完成的时间戳
-        let hasAssistant = false;
-        let lastStatus = '';
-        let assistantStuckAt = 0; // assistant 首次出现忙状态且无内容的时间戳
+        // Stream the response via session.prompt (POST /session/{sessionID}/message)
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), TIMEOUT_MS);
 
-        while (Date.now() - startTime < TIMEOUT_MS) {
-            await new Promise(r => setTimeout(r, POLL_INTERVAL));
+        try {
+            const response = await session.client.session.prompt({
+                sessionID: session.sessionId,
+                parts: promptBody.parts,
+                ...(promptBody.model ? { model: promptBody.model } : {}),
+            }, {
+                parseAs: 'stream',
+                signal: abortController.signal,
+            });
 
+            if (response.error) {
+                return `❌ 发送失败: ${response.error}`;
+            }
+
+            const stream = response.data;
+            if (!stream) {
+                return '❌ 未收到响应流';
+            }
+
+            const reader = stream.getReader();
+            const decoder = new TextDecoder();
+            let rawJson = '';
+            let responseText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                if (!chunk) continue;
+                rawJson += chunk;
+            }
+
+            // Parse the full response JSON
+            if (isRawDebug()) console.log('[RAW]', rawJson);
             try {
-                const msgsResult = await session.client.session.messages({
-                    path: { id: session.sessionId }
-                });
-
-                if (msgsResult.error) { console.error('[sendMessage] Messages error:', msgsResult.error); break; }
-                if (!msgsResult.data?.length) continue;
-
-                const messages = msgsResult.data;
-
-                // 工具活动
-                for (let i = msgCountBefore; i < messages.length; i++) {
-                    const msg = messages[i];
-                    if (msg.parts) for (const part of msg.parts) {
-                        if (part.type === 'tool_use' || part.type === 'tool_result') {
-                            hasToolActivity = true;
-                            callbacks?.onEvent?.({ type: 'tool.call', properties: { name: part.name || part.tool_name || 'unknown', input: part.input || {} } });
-                            break;
+                const parsed = JSON.parse(rawJson);
+                const t = parsed.info?.tokens || {};
+                const time = parsed.info?.time || {};
+                const elapsed = time.completed && time.created ? `${(time.completed - time.created) / 1000}s` : '?';
+                const cacheRead = t.cache?.read || 0;
+                const cacheWrite = t.cache?.write || 0;
+                const cacheRate = cacheRead + cacheWrite > 0 ? `${(cacheRead / (cacheRead + cacheWrite) * 100).toFixed(0)}%` : '-';
+                console.log(`[RESPONSE] ${parsed.info?.providerID}/${parsed.info?.modelID} │ ${elapsed} │ tokens=${t.total || '?'} (in=${t.input} out=${t.output} rsn=${t.reasoning}) │ cache ${cacheRate} │ finish=${parsed.info?.finish || '?'}`);
+                const meta = { modelID: parsed.info?.modelID, providerID: parsed.info?.providerID, tokens: t, parts: parsed.parts };
+                callbacks?.onResponseMeta?.(meta);
+                if (parsed.parts) {
+                    for (const part of parsed.parts) {
+                        if (part.type === 'text' && part.text) {
+                            responseText += part.text;
+                            callbacks?.onNewContent?.(part.text);
+                            callbacks?.onTextDelta?.(part.text);
                         }
-                    }
-                    if (hasToolActivity) break;
-                }
-
-                // 收集所有新的 assistant 回复（累加，不丢内容）
-                // Always collect from msgCountBefore onwards; use lastMsgId only to skip already-known tail.
-                {
-                    let startIdx = msgCountBefore;
-                    if (lastMsgId) {
-                        const idx = messages.findIndex(m => m.info?.id === lastMsgId);
-                        if (idx >= 0) startIdx = Math.max(startIdx, idx + 1);
-                    }
-                    const newParts = [];
-                    for (let i = startIdx; i < messages.length; i++) {
-                        const msg = messages[i];
-                        if (msg.info?.role === 'assistant' && msg.parts) {
-                            for (const p of msg.parts) {
-                                if (p.type === 'text' && p.text) newParts.push(p.text);
+                        if (part.type === 'reasoning' && part.text) {
+                            const cleaned = part.text.replace(/\n/g, ' ').trim();
+                            console.log(`[REASONING] ${cleaned.slice(0, 300)}`);
+                            if (thinkVisibleEnabled) {
+                                responseText += `\n🤔 思考: ${cleaned}\n━━━━━━━━━━━━━━━━━━\n`;
+                                callbacks?.onNewContent?.(`\n🤔 思考: ${cleaned}\n━━━━━━━━━━━━━━━━━━\n`);
                             }
                         }
                     }
-                    const fullText = newParts.join('\n');
-                    if (fullText && fullText !== responseText) {
-                        const delta = fullText.slice(responseText.length);
-                        responseText = fullText;
-                        callbacks?.onTextDelta?.(delta);
-                        callbacks?.onNewContent?.(delta);
-                        idleSince = Date.now();
-                        hasAssistant = true;
-                        continue;
-                    }
                 }
-
-                // 检查 AI 是否还在忙: 看最后一条 assistant 消息是否有 finish 标记。
-                // OC 这个版本没有 info.status 字段，用 info.finish + time.completed 判断。
-                // 只要 finish 有值（stop/error/failed/cancelled 等）就算完成。
-                const lastMsg = msgsResult.data?.length ? msgsResult.data[msgsResult.data.length - 1] : null;
-                const lastInfo = lastMsg?.info || {};
-                const isAssistant = lastInfo.role === 'assistant';
-                if (isAssistant) hasAssistant = true;
-                const isFinished = isAssistant && (lastInfo.finish || lastInfo.time?.completed);
-                const isBusy = isAssistant && !isFinished;
-                if (isBusy) {
-                    idleSince = Date.now();
-                    // Track assistant stuck without any content for too long
-                    if (!responseText && assistantStuckAt === 0) assistantStuckAt = Date.now();
-                } else if (isFinished && idleSince === startTime && responseText) {
-                    // AI completed before any new content arrived: start idle clock from completion
-                    idleSince = Date.now();
-                } else {
-                    assistantStuckAt = 0; // not busy or finished → not stuck
-                }
-                if (isFinished) lastStatus = 'finished';
-                else if (isAssistant) lastStatus = 'busy';
-                if (lastStatus && lastStatus !== lastReportedStatus) {
-                    lastReportedStatus = lastStatus;
-                    console.log(`[AI状态] ${lastStatus} (finish=${lastInfo.finish || '?'})`);
-                }
-
-                // 超时: assistant 忙 >60s 且无任何内容 → 模型可能卡死（限频/额度/网络）
-                if (assistantStuckAt > 0 && Date.now() - assistantStuckAt > 60000) {
-                    console.warn(`[sendMessage] Assistant stuck busy for >60s, no content`);
-                    callbacks?.onNewContent?.('⚠️ AI 模型长时间无响应，可能是额度不足或网络问题，请检查模型状态或重试');
-                    return '⚠️ AI 模型无响应（超过 60 秒未返回内容）';
-                }
-
-                // 退出条件: 只有 assistant 已出现且不再忙时才考虑 break
-                if (hasAssistant && !isBusy && Date.now() - idleSince > 5000) {
-                    // 兜底: 如果 onNewContent 从未触发（如纯错误响应），直接从消息提取文本
-                    if (!responseText && lastMsg) {
-                        const textParts = lastMsg.parts?.filter(p => p.type === 'text' && p.text).map(p => p.text) || [];
-                        responseText = textParts.join('\n');
-                    }
-                    break;
-                }
-                if (Date.now() - startTime > TIMEOUT_MS) {
-                    console.warn(`[sendMessage] 5min hard timeout (status=${lastStatus}), aborting poll`);
-                    return responseText || '⏰ 请求超时，请重试';
+                if (!responseText && parsed.info?.finish) {
+                    responseText = '[empty response]';
                 }
             } catch (e) {
-                console.warn('Poll error:', e.message);
+                console.error('[sendMessage] Failed to parse response:', e.message);
+                console.log('[RAW]', rawJson.slice(0, 1000));
+                responseText = rawJson;
             }
+
+            callbacks?.onStatusChange?.({ type: 'idle' });
+            return responseText;
+
+        } finally {
+            clearTimeout(timeoutId);
         }
-        
-        if (!responseText) {
-            console.warn('⏰ Timeout waiting for response, status:', lastStatus);
-            // Try one more time with a fresh message query
-            try {
-                const finalMsgs = await session.client.session.messages({ path: { id: session.sessionId }, query: { limit: 50 } });
-                if (finalMsgs.data?.length) {
-                    for (let i = finalMsgs.data.length - 1; i >= 0; i--) {
-                        const msg = finalMsgs.data[i];
-                        if (msg.info?.role === 'assistant' && msg.parts) {
-                            const textParts = msg.parts.filter(p => p.type === 'text' && p.text).map(p => p.text);
-                            if (textParts.length > 0) {
-                                responseText = textParts.join('\n');
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch { /* ignore */ }
-            
-            if (!responseText) {
-                return '⏰ 请求超时，请重试';
-            }
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            console.warn('[sendMessage] 5min timeout, aborting stream');
+            return '⏰ 请求超时，请重试';
         }
-        
-        callbacks?.onStatusChange?.({ type: 'idle', hasToolActivity });
-        return responseText;
-    }
-    catch (error) {
-        console.error('Error sending message:', error);
+        console.error('[sendMessage] Error:', error);
         return `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
 }
 export async function getSession(session) {
     try {
         const result = await session.client.session.get({
-            path: { id: session.sessionId }
+            sessionID: session.sessionId
         });
         if (result.error) {
             return null;
@@ -597,7 +539,7 @@ export async function getSession(session) {
 export async function shareSession(session) {
     try {
         const result = await session.client.session.share({
-            path: { id: session.sessionId }
+            sessionID: session.sessionId
         });
         if (result.error || !result.data?.share?.url) {
             return null;
@@ -623,7 +565,7 @@ export async function checkConnection() {
 export async function abortSession(session) {
     try {
         await session.client.session.abort({
-            path: { id: session.sessionId }
+            sessionID: session.sessionId
         });
         console.log(`🛑 Aborted session: ${session.sessionId}`);
         return true;
@@ -636,7 +578,7 @@ export async function abortSession(session) {
 export async function getSessionMessages(session, limit = 20) {
     try {
         const result = await session.client.session.messages({
-            path: { id: session.sessionId }
+            sessionID: session.sessionId
         });
         if (result.error) {
             return null;
@@ -652,7 +594,7 @@ export async function resumeSession(sessionId, title = 'Resumed session') {
     try {
         const opencode = await initOpenCode();
         if (!opencode) return null;
-        const getResult = await opencode.client.session.get({ path: { id: sessionId } });
+        const getResult = await opencode.client.session.get({ sessionID: sessionId });
         if (getResult.error) {
             console.warn(`Session ${sessionId} not found`);
             return null;
@@ -677,10 +619,9 @@ export async function listOpenCodeSessions() {
         return sessions.map(s => ({
             id: s.id,
             title: s.title || 'Untitled',
-            status: s.status?.type || 'unknown',
             directory: s.directory || '',
-            createdAt: s.created_at || 0,
-            lastActivity: s.updated_at || 0,
+            createdAt: s.created_at || s.time?.created || 0,
+            lastActivity: s.updated_at || s.time?.updated || 0,
         }));
     }
     catch (error) {
@@ -690,7 +631,7 @@ export async function listOpenCodeSessions() {
 }
 export async function listOpenCodeSessionsFromServer(baseUrl) {
     try {
-        const { createOpencodeClient } = await import('@opencode-ai/sdk');
+        const { createOpencodeClient } = await import('@opencode-ai/sdk/v2');
         const client = createOpencodeClient({
             baseUrl: baseUrl || 'http://localhost:4096',
         });
@@ -702,10 +643,9 @@ export async function listOpenCodeSessionsFromServer(baseUrl) {
         return sessions.map(s => ({
             id: s.id,
             title: s.title || 'Untitled',
-            status: s.status?.type || 'unknown',
             directory: s.directory || '',
-            createdAt: s.created_at || 0,
-            lastActivity: s.updated_at || 0,
+            createdAt: s.created_at || s.time?.created || 0,
+            lastActivity: s.updated_at || s.time?.updated || 0,
         }));
     }
     catch (error) {
@@ -718,7 +658,7 @@ export async function createOpenCodeSession(title = 'New session') {
         const opencode = await initOpenCode();
         if (!opencode) return null;
         const result = await opencode.client.session.create({
-            body: { title }
+            title
         });
         if (result.error) {
             return null;
@@ -742,7 +682,7 @@ export async function deleteOpenCodeSession(sessionId) {
         const opencode = await initOpenCode();
         if (!opencode) return false;
         const result = await opencode.client.session.delete({
-            path: { id: sessionId }
+            sessionID: sessionId
         });
         if (result.error) {
             return false;
@@ -757,9 +697,9 @@ export async function deleteOpenCodeSession(sessionId) {
 }
 export async function renameOpenCodeSession(session, title) {
     try {
-        const result = await session.client.session.patch({
-            path: { id: session.sessionId },
-            body: { title }
+        const result = await session.client.session.update({
+            sessionID: session.sessionId,
+            title,
         });
         if (result.error) {
             return false;
@@ -777,9 +717,9 @@ export async function forkSession(sessionId, messageID, directory) {
         const opencode = await initOpenCode();
         if (!opencode) return null;
         const result = await opencode.client.session.fork({
-            path: { id: sessionId },
-            body: { messageID },
-            query: directory ? { directory } : {}
+            sessionID: sessionId,
+            messageID,
+            ...(directory ? { directory } : {}),
         });
         if (result.error) {
             console.warn(`Fork failed: ${result.error}`);
@@ -804,8 +744,9 @@ export async function revertSessionMessage(sessionId, messageID, partID) {
         const opencode = await initOpenCode();
         if (!opencode) return false;
         const result = await opencode.client.session.revert({
-            path: { id: sessionId },
-            body: { messageID, partID }
+            sessionID: sessionId,
+            messageID,
+            partID,
         });
         if (result.error) {
             console.warn(`Revert failed: ${result.error}`);
@@ -824,7 +765,7 @@ export async function unrevertSession(sessionId) {
         const opencode = await initOpenCode();
         if (!opencode) return false;
         const result = await opencode.client.session.unrevert({
-            path: { id: sessionId }
+            sessionID: sessionId
         });
         if (result.error) {
             console.warn(`Unrevert failed: ${result.error}`);
@@ -843,9 +784,12 @@ export async function listProviders() {
     try {
         const opencode = await initOpenCode();
         if (!opencode) return null;
-        const result = await opencode.client.provider.list();
-        if (result.error || !result.data?.all) return null;
-        return result.data.all;
+        // Config2.providers() → GET /config/providers (same as v1)
+        const result = await opencode.client.config.providers();
+        if (result.error) return null;
+        // v2 returns { providers: [...] }, v1 returns { all: [...] }
+        const data = result.data?.providers || result.data?.all || result.data || [];
+        return Array.isArray(data) ? data : null;
     } catch (error) {
         console.error('Failed to list providers:', error.message);
         return null;
@@ -857,7 +801,7 @@ export async function updateGlobalModel(modelStr) {
         const opencode = await initOpenCode();
         if (!opencode) return false;
         const result = await opencode.client.config.update({
-            body: { model: modelStr },
+            config: { model: modelStr },
         });
         if (result.error) {
             console.error('Failed to update model:', result.error);

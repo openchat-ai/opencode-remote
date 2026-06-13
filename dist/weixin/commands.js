@@ -1,15 +1,33 @@
-import { detectCommand, COMMAND_ALIASES, getHelpText, DEMO_RESPONSES, setDemoMode, isDemoMode } from '../core/router.js';
-import { getOrCreateSession, saveSessionMapping, sessionManager } from '../core/session.js';
+import { getHelpText } from '../core/router.js';
 import { splitMessage } from '../core/notifications.js';
-import { initOpenCode, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, setThreadModel, getThreadModel, getRecentModels } from '../opencode/client.js';
-import { claimOwnership } from '../core/auth.js';
+import { abortSession, initOpenCode, listProviders, getThreadModel, setThreadModel, getRecentModels, setRawDebug, isRawDebug, createSession } from '../opencode/client.js';
+import { claimOwnership, hasOwner } from '../core/auth.js';
 import { registry } from '../core/registry.js';
-import { uploadToQiniu, findBuildOutputs, formatSize, deleteFromQiniu } from '../core/qiniu.js';
+import { deleteFromQiniu } from '../core/qiniu.js';
+import { join } from 'path';
 import { existsSync } from 'fs';
-import { join, basename } from 'path';
+import { homedir } from 'os';
+import { DEFAULT_BASE_URL } from './types.js';
+import { userAdapterMap } from './user-adapter-map.js';
 
-export let _startLoopCycle = null;
-export function _registerStartLoopCycle(fn) { _startLoopCycle = fn; }
+// 共享会话
+export const sharedRoom = {
+    session: null,
+    members: new Set(),
+    busy: false,
+};
+export function isSharedMember(threadId) {
+    return sharedRoom.members.has(threadId);
+}
+export function addSharedMember(threadId) {
+    sharedRoom.members.add(threadId);
+}
+export function removeSharedMember(threadId) {
+    sharedRoom.members.delete(threadId);
+}
+
+// 线程级活跃 agent 追踪
+export const threadAgent = new Map();
 
 async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
     const agent = registry.findAgent(agentName);
@@ -25,24 +43,32 @@ async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
         return true;
     }
 
-    const session = await getOrCreateSession(ctx.threadId, 'weixin');
-    session.currentAgent = agentName;
-
     if (!prompt) {
         try {
-            await adapter.reply(ctx.threadId, `✅ 已切换到 ${agentName}`);
+            if (agentName === 'opencode') {
+                threadAgent.delete(ctx.threadId);
+                await adapter.reply(ctx.threadId, `✅ 已切换回 OpenCode`);
+            } else {
+                threadAgent.set(ctx.threadId, agentName);
+                await adapter.reply(ctx.threadId, `✅ 已切换到 ${agentName}，后续消息将路由至 ${agentName}`);
+            }
         } catch (e) {
             console.error(`[handleAgentSwitch] reply failed: ${e.message}`);
         }
-        saveSessionMapping();
         return true;
+    }
+
+    // 有 prompt 时也设置活跃 agent
+    if (agentName === 'opencode') {
+        threadAgent.delete(ctx.threadId);
+    } else {
+        threadAgent.set(ctx.threadId, agentName);
     }
 
     await adapter.sendTyping?.(ctx.threadId, true);
 
     try {
-        const history = session.commandHistory || [];
-        const response = await agent.sendPrompt(session.id, prompt, history, { projectDir: session.projectDir || globalThis.__autoProjectDir });
+        const response = await agent.sendPrompt(agentName, prompt, [], { projectDir: globalThis.__autoProjectDir });
 
         await adapter.sendTyping?.(ctx.threadId, false);
 
@@ -50,10 +76,6 @@ async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
         for (const chunk of chunks) {
             await adapter.reply(ctx.threadId, chunk);
         }
-
-        session.commandHistory = session.commandHistory || [];
-        session.commandHistory.push(prompt);
-        saveSessionMapping();
 
     } catch (error) {
         await adapter.sendTyping?.(ctx.threadId, false);
@@ -63,25 +85,14 @@ async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
     return true;
 }
 
-function formatTimeAgo(timestamp) {
-    const diff = Date.now() - timestamp;
-    const seconds = Math.floor(diff / 1000);
-    if (seconds < 60) return `${seconds}秒前`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}分钟前`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}小时前`;
-    return `${Math.floor(hours / 24)}天前`;
-}
-
 async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
-    const session = await getOrCreateSession(ctx.threadId, 'weixin');
+    const session = {};
     switch (command) {
         case 'start': {
             const result = claimOwnership('weixin', ctx.userId);
             if (result.success) {
                 if (result.message === 'claimed') {
-                    await adapter.reply(ctx.threadId, `🔐 安全设置完成！你是此 bot 的唯一所有者。\n\n发送消息给 OpenCode 开始工作\n/help 查看指令\n/status 查看状态`);
+                    await adapter.reply(ctx.threadId, `🔐 安全设置完成！你是此 bot 的唯一所有者。\n\n发送消息给 OpenCode 开始工作\n/help 查看指令`);
                 } else {
                     await adapter.reply(ctx.threadId, `🚀 准备就绪\n\n发送消息给 OpenCode 开始工作\n/help 查看指令`);
                 }
@@ -93,367 +104,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         case 'help':
             await adapter.reply(ctx.threadId, getHelpText());
             return true;
-        case 'tutorial': {
-            const { TUTORIAL_STEPS } = await import('../core/router.js');
-            const stepNum = parseInt(arg, 10);
-            const step = !isNaN(stepNum) && stepNum >= 1 && stepNum <= TUTORIAL_STEPS.length ? stepNum : 1;
-            const s = TUTORIAL_STEPS[step - 1];
-            let msg = `📚 教程 · 第 ${s.step}/${TUTORIAL_STEPS.length} 步\n━━━━━━━━━━━━━━━━\n\n${s.title}\n\n${s.desc}\n\n`;
-            if (s.action) msg += `👉 ${s.action}`;
-            msg += `\n\n回复 /tutorial${step < TUTORIAL_STEPS.length ? ` 继续第${step + 1}步` : ''} 进入下一步`;
-            const msgs = splitMessage(msg);
-            for (const m of msgs) await adapter.reply(ctx.threadId, m);
-            return true;
-        }
-                case 'status': {
-                    const connected = await checkConnection();
-                    const running = session.taskStartTime ? Math.round((Date.now() - session.taskStartTime) / 1000) : 0;
-
-                    let msg = `${connected ? '✅' : '❌'} OpenCode ${connected ? '在线' : '离线'}\n\n`;
-
-                    const actualSession = openCodeSessions?.get(ctx.threadId) ||
-                                         (session.opencodeSessionId ? { sessionId: session.opencodeSessionId } : null);
-
-                    msg += `会话: ${actualSession?.sessionId?.slice(0, 8) || '无'}\n`;
-
-                    if (running > 0) {
-                        const m = Math.floor(running / 60);
-                        const s = running % 60;
-                        msg += `运行中: ${m}分${s}秒\n`;
-                    }
-                    if (session.currentTool) {
-                        msg += `当前: ${session.currentTool}\n`;
-                    }
-                    if (session.modifiedFiles?.length > 0 || session.modifiedFiles?.size > 0) {
-                        msg += `已修改: ${(session.modifiedFiles?.length || session.modifiedFiles?.size || 0)} 个文件\n`;
-                    }
-
-                    const projectDir = session.projectDir || globalThis.__autoProjectDir;
-                    if (projectDir) {
-                        msg += `项目目录: ${projectDir}\n`;
-                    } else {
-                        msg += `项目目录: 未设置\n`;
-                    }
-
-                    const workDir = process.cwd();
-                    msg += `工作目录: ${workDir}\n`;
-
-                    if (session.originalProjectDir && session.originalProjectDir !== projectDir) {
-                        msg += `原始目录: ${session.originalProjectDir}\n`;
-                    }
-
-                    await adapter.reply(ctx.threadId, msg);
-                    return true;
-                }
-
-                case 'sessions': {
-                    try {
-                        const opencode = await initOpenCode();
-                        if (!opencode) {
-                            await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                            return true;
-                        }
-                        const result = await opencode.client.session.list();
-                        if (result.error || !result.data || result.data.length === 0) {
-                            await adapter.reply(ctx.threadId, '📭 暂无会话');
-                            return true;
-                        }
-                        const sorted = result.data.sort((a, b) => (b.time.updated || 0) - (a.time.updated || 0));
-                        session._switchSessionList = sorted;
-                        session._showSessionState = true;
-                        let msg = '📂 选择会话（回复编号）：\n\n';
-                        sorted.slice(0, 10).forEach((s, i) => {
-                            const n = i + 1;
-                            const title = s.title || '无标题';
-                            const time = s.updated_at ? formatTimeAgo(s.updated_at * 1000) : '';
-                            msg += `${n}. ${title} (${time})\n`;
-                        });
-                        if (sorted.length > 10) {
-                            msg += `\n... 共 ${sorted.length} 个会话`;
-                        }
-                        msg += '\n\n回复编号切换会话';
-                        await adapter.reply(ctx.threadId, msg);
-                    } catch (e) {
-                        await adapter.reply(ctx.threadId, `❌ 获取会话失败: ${e.message}`);
-                    }
-                    return true;
-                }
-
-                case 'delsessions': {
-                    try {
-                        const opencode = await initOpenCode();
-                        if (!opencode) {
-                            await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                            return true;
-                        }
-                        const result = await opencode.client.session.list();
-                        if (result.error || !result.data || result.data.length === 0) {
-                            await adapter.reply(ctx.threadId, '📭 暂无会话可删除');
-                            return true;
-                        }
-                        const sorted = result.data.sort((a, b) => (b.time.updated || 0) - (a.time.updated || 0));
-                        session._deleteSessionList = sorted;
-                        let msg = '🗑️ 选择要删除的会话（回复编号）：\n\n';
-                        sorted.slice(0, 10).forEach((s, i) => {
-                            const n = i + 1;
-                            const title = s.title || '无标题';
-                            const time = s.updated_at ? formatTimeAgo(s.updated_at * 1000) : '';
-                            msg += `${n}. ${title} (${time})\n`;
-                        });
-                        if (sorted.length > 10) {
-                            msg += `\n... 共 ${sorted.length} 个会话`;
-                        }
-                        msg += '\n\n回复编号删除';
-                        await adapter.reply(ctx.threadId, msg);
-                    } catch (e) {
-                        await adapter.reply(ctx.threadId, `❌ 获取会话失败: ${e.message}`);
-                    }
-                    return true;
-                }
-
-
-                case 'copy': {
-            const ocSession = openCodeSessions.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            
-            const msgsResult = await ocSession.client.session.messages({ 
-                path: { id: ocSession.sessionId },
-                query: { limit: 1 }
-            });
-            
-            if (msgsResult.error || !msgsResult.data || msgsResult.data.length === 0) {
-                await adapter.reply(ctx.threadId, '❌ 无法获取最新消息');
-                return true;
-            }
-            
-            let latestMsg = msgsResult.data[0];
-            if (latestMsg.info.role !== 'assistant') {
-                await adapter.reply(ctx.threadId, 'ℹ️ 最新消息不是 AI 回复，正在获取上一条 AI 消息...');
-
-                const allMsgsResult = await ocSession.client.session.messages({
-                    path: { id: ocSession.sessionId },
-                    query: { limit: 10 }
-                });
-
-                if (allMsgsResult.error || !allMsgsResult.data) {
-                    await adapter.reply(ctx.threadId, '❌ 无法获取会话消息');
-                    return true;
-                }
-
-                const aiMsg = allMsgsResult.data.find(m => m.info.role === 'assistant');
-                if (!aiMsg) {
-                    await adapter.reply(ctx.threadId, '❌ 未找到 AI 回复');
-                    return true;
-                }
-                latestMsg = aiMsg;
-            }
-            
-            let content = '';
-            if (latestMsg.parts) {
-                for (const part of latestMsg.parts) {
-                    if (part.type === 'text') {
-                        content += part.text + '\n';
-                    }
-                    if (part.type === 'code') {
-                        content += `\`\`\`${part.language || ''}\n${part.code}\n\`\`\`\n`;
-                    }
-                    if (part.type === 'file' && part.content) {
-                        content += `📁 ${part.filename}:\n${part.content}\n`;
-                    }
-                }
-            }
-            
-            if (!content.trim()) {
-                await adapter.reply(ctx.threadId, '❌ AI 回复中没有可复制的文本内容');
-                return true;
-            }
-            
-            await adapter.reply(ctx.threadId, `📋 已复制最新 AI 回复内容:\n\n${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}`);
-            return true;
-        }
-
-        case 'resume': {
-            try {
-                const opencode = await initOpenCode();
-                const result = await opencode.client.session.list();
-                if (!result.data || result.data.length === 0) {
-                    await adapter.reply(ctx.threadId, '❌ 没有找到会话');
-                    return true;
-                }
-
-                const sorted = result.data.sort((a, b) => (b.time.updated || 0) - (a.time.updated || 0));
-                const latest = sorted[0];
-
-                const resumed = await resumeSession(latest.id);
-                if (!resumed) {
-                    await adapter.reply(ctx.threadId, '❌ 恢复会话失败');
-                    return true;
-                }
-
-                openCodeSessions.set(ctx.threadId, resumed);
-                session.opencodeSessionId = resumed.sessionId;
-                const key = `weixin:${ctx.userId}:${ctx.threadId}`;
-                sessionManager.saveSession(key, session).catch(() => {});
-                saveSessionMapping();
-
-                if (latest.directory) {
-                    session.projectDir = latest.directory;
-                }
-                
-                await adapter.reply(ctx.threadId, `✅ 已恢复最近会话\n\n会话: ${latest.title || 'Untitled'}\n📁 目录: ${latest.directory || 'N/A'}\n📝 更新: ${new Date(latest.time.updated).toLocaleString()}`);
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 恢复失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'edit': {
-            const ocSession = openCodeSessions.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            if (arg) {
-                const num = parseInt(arg, 10);
-                if (num >= 1) {
-                    try {
-                        const opencode = await initOpenCode();
-                        const msgsResult = await opencode.client.session.messages({ path: { id: ocSession.sessionId } });
-                        if (!msgsResult.error && msgsResult.data) {
-                            const userMsgs = msgsResult.data.filter(m => m.info?.role === 'user');
-                            if (num <= userMsgs.length) {
-                                const targetMsg = userMsgs[num - 1];
-                                const preview = targetMsg.info?.content?.slice(0, 80) || '(空)';
-                                session._editTarget = { sessionId: ocSession.sessionId, messageID: targetMsg.id, num };
-                                await adapter.reply(ctx.threadId, `✏️ 选择修改消息 #${num}：\n\n${preview}\n\n请发送修正后的内容，将从该消息之前创建新分支`);
-                                return true;
-                            }
-                        }
-                    } catch (e) {
-                        await adapter.reply(ctx.threadId, `❌ 操作失败: ${e.message}`);
-                        return true;
-                    }
-                }
-                await adapter.reply(ctx.threadId, `❌ 无效编号`);
-                return true;
-            }
-            const opencode = await initOpenCode();
-            if (!opencode) {
-                await adapter.reply(ctx.threadId, '❌ 无法获取消息');
-                return true;
-            }
-            const msgsResult = await opencode.client.session.messages({ path: { id: ocSession.sessionId } });
-            if (msgsResult.error || !msgsResult.data) {
-                await adapter.reply(ctx.threadId, '❌ 无法获取消息');
-                return true;
-            }
-            const userMsgs = msgsResult.data.filter(m => m.info?.role === 'user');
-            if (userMsgs.length === 0) {
-                await adapter.reply(ctx.threadId, '📭 没有用户消息可编辑');
-                return true;
-            }
-            let msg = '✏️ 选择要修改的消息（回复编号）：\n\n';
-            const showCount = Math.min(userMsgs.length, 15);
-            const startIdx = userMsgs.length - showCount;
-            for (let i = startIdx; i < userMsgs.length; i++) {
-                const m = userMsgs[i];
-                const num = i + 1;
-                const preview = m.info?.content?.slice(0, 60) || '(空)';
-                msg += `${num}. ${preview}\n`;
-            }
-            if (userMsgs.length > 15) {
-                msg += `\n... 共 ${userMsgs.length} 条消息`;
-            }
-            session._editList = userMsgs;
-            session._editSessionId = ocSession.sessionId;
-            const msgs = splitMessage(msg);
-            for (const m of msgs) {
-                await adapter.reply(ctx.threadId, m);
-            }
-            return true;
-        }
-        case 'revert': {
-            const ocS = openCodeSessions.get(ctx.threadId);
-            if (!ocS) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            if (arg === 'undo') {
-                const ok = await unrevertSession(ocS.sessionId);
-                if (ok) {
-                    await adapter.reply(ctx.threadId, '↩️ 已恢复撤销的内容');
-                } else {
-                    await adapter.reply(ctx.threadId, '❌ 恢复失败');
-                }
-                return true;
-            }
-            const opencode = await initOpenCode();
-            if (!opencode) {
-                await adapter.reply(ctx.threadId, '❌ 无法获取消息');
-                return true;
-            }
-            const msgsResult = await opencode.client.session.messages({ path: { id: ocS.sessionId } });
-            if (msgsResult.error || !msgsResult.data) {
-                await adapter.reply(ctx.threadId, '❌ 无法获取消息');
-                return true;
-            }
-            const assistantMsgs = msgsResult.data.filter(m => m.info?.role === 'assistant' && m.time?.created);
-            if (assistantMsgs.length === 0) {
-                await adapter.reply(ctx.threadId, '📭 没有可撤销的消息');
-                return true;
-            }
-            const lastMsg = assistantMsgs[assistantMsgs.length - 1];
-            const ok = await revertSessionMessage(ocS.sessionId, lastMsg.id);
-            if (ok) {
-                const preview = lastMsg.info?.content?.slice(0, 100) || '(无内容)';
-                await adapter.reply(ctx.threadId, `↩️ 已撤销最近的消息\n\n${preview}\n\n发送 /revert undo 恢复`);
-            } else {
-                await adapter.reply(ctx.threadId, '❌ 撤销失败');
-            }
-            return true;
-        }
-        case 'loop': {
-            const argText = arg || '';
-            if (argText === 'off' || argText === 'stop') {
-                session.loopMode = false;
-                session.loopPrompt = null;
-                session.loopIterationCount = 0;
-                session.loopStartTime = null;
-                saveSessionMapping();
-                await adapter.reply(ctx.threadId, '⏹️ 循环任务已停止');
-                return true;
-            }
-            if (argText === 'status') {
-                if (session.loopMode) {
-                    const elapsed = session.loopStartTime
-                        ? `已运行: ${Math.floor((Date.now() - session.loopStartTime) / 60000)}分钟`
-                        : '';
-                    const count = session.loopIterationCount || 0;
-                    const limit = session.loopMaxIterations || 10;
-                    await adapter.reply(ctx.threadId, `🔄 循环任务运行中\n指令: ${session.loopPrompt || '智能模式'}\n迭代: ${count}/${limit} ${elapsed}`);
-                } else {
-                    await adapter.reply(ctx.threadId, '⏹️ 循环任务未运行\n发送 /loop 开始');
-                }
-                return true;
-            }
-            session.loopMode = true;
-            session.loopPrompt = argText || null;
-            session.lastLoopTime = Date.now();
-            session.loopStartTime = Date.now();
-            session.loopIterationCount = 0;
-            session.loopMaxIterations = 10;
-            session.loopMaxTimeMs = 30 * 60 * 1000;
-            saveSessionMapping();
-            const modeDesc = argText ? `指令: ${argText}` : '智能模式（根据上下文自动生成指令）';
-            await adapter.reply(ctx.threadId, `🔄 循环任务已启动\n${modeDesc}\n限制: 最多10次迭代或30分钟\n\n发送 /loop off 停止`);
-            if (_startLoopCycle) {
-                _startLoopCycle(adapter, ctx, openCodeSessions, session);
-            }
-            return true;
-        }
-
         case 'restart': {
             console.log('[bot] restart command received');
             await adapter.reply(ctx.threadId, '🔄 正在重启 bot...');
@@ -471,138 +121,13 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
 
-        case 'upload': {
-            const projectDir = session.projectDir || globalThis.__autoProjectDir;
-
-            if (arg && arg.trim()) {
-                const filePath = arg.trim();
-
-                let fullPath = filePath;
-                if (!existsSync(fullPath) && projectDir) {
-                    fullPath = join(projectDir, filePath);
-                }
-
-                if (!existsSync(fullPath)) {
-                    await adapter.reply(ctx.threadId, `❌ 文件不存在: ${filePath}`);
-                    return true;
-                }
-
-                await adapter.reply(ctx.threadId, `⬆️ 正在上传: ${basename(fullPath)}...`);
-
-                try {
-                    const result = await uploadToQiniu(fullPath);
-                    if (result.skipped) {
-                        await adapter.reply(ctx.threadId, `⏭️ 文件已存在，不需要重复上传，你是要删除吗?\n/delete ${result.key}`);
-                    } else {
-                        await adapter.reply(ctx.threadId, result.url);
-                        await adapter.reply(ctx.threadId, `/delete ${result.key}`);
-                    }
-                } catch (e) {
-                    await adapter.reply(ctx.threadId, `❌ 上传失败: ${e.message}`);
-                }
-                return true;
-            }
-
-            if (!projectDir) {
-                await adapter.reply(ctx.threadId, '❌ 未设置项目目录，请先设置项目目录或指定完整文件路径\n\n用法:\n/upload <文件路径>');
-                return true;
-            }
-
-            await adapter.reply(ctx.threadId, '🔍 正在搜索构建产物...');
-
-            const files = findBuildOutputs(projectDir);
-
-            if (files.length === 0) {
-                await adapter.reply(ctx.threadId, '❌ 未找到任何构建产物\n\n请指定完整文件路径，例如: /upload build/app.apk');
-                return true;
-            }
-
-            const displayFiles = files.slice(0, 10);
-            let listMsg = `📦 找到 ${files.length} 个构建产物:\n\n`;
-            for (let i = 0; i < displayFiles.length; i++) {
-                const f = displayFiles[i];
-                listMsg += `${i + 1}. ${f.name}\n`;
-                listMsg += `   📍 ${f.relativePath}\n`;
-                listMsg += `   📊 ${formatSize(f.size)}\n\n`;
-            }
-            if (files.length > 10) {
-                listMsg += `...还有 ${files.length - 10} 个文件`;
-            }
-            listMsg += `\n正在上传最新的: ${files[0].name}`;
-            await adapter.reply(ctx.threadId, listMsg);
-
-            const targetFile = files[0];
-
-            try {
-                const result = await uploadToQiniu(targetFile.path);
-                if (result.skipped) {
-                    await adapter.reply(ctx.threadId, `⏭️ 文件已存在，不需要重复上传，你是要删除吗?\n/delete ${result.key}`);
-                } else {
-                    await adapter.reply(ctx.threadId, result.url);
-                    await adapter.reply(ctx.threadId, `/delete ${result.key}`);
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 上传失败: ${e.message}`);
-            }
-            return true;
-        }
-
         case 'reset': {
             const oldSession = openCodeSessions?.get(ctx.threadId);
             if (oldSession) {
                 abortSession(oldSession).catch(() => {});
             }
-            session.pendingApprovals = [];
-            session.opencodeSessionId = null;
-            session.loopMode = false;
-            session.loopPrompt = null;
-            session.projectDir = null;
-            session.currentAgent = null;
-            session.messages = [];
-            session.commandHistory = [];
-            session.taskStartTime = null;
-            session.currentTool = null;
-            session.modifiedFiles = null;
-            session.lastUserMessage = null;
-            session._lastPrompt = null;
-            session._contextScope = null;
-            session.originalProjectDir = null;
-            session._switchSessionList = null;
-            session._deleteSessionList = null;
-            session._pendingSwitchSession = null;
-            session._editTarget = null;
-            session._editList = null;
-            session._editSessionId = null;
-            session._historyList = null;
-            session._forkList = null;
-            session._forkSessionId = null;
-            session.expertMode = false;
-            session.systemPrompt = null;
-            session._analyzeMode = false;
-            session._analyzeTask = null;
-            session._showSessionState = null;
-            session.id = `${Date.now()}-${ctx.threadId}-reset`;
             openCodeSessions?.delete(ctx.threadId);
-            globalThis.__latestOpenCodeSession = null;
-            saveSessionMapping();
             await adapter.reply(ctx.threadId, '🔄 会话已重置，下次发送消息将创建新会话');
-            return true;
-        }
-
-        case 'refresh': {
-            const ocSession = openCodeSessions.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '🔄 正在刷新会话...');
-            try {
-                await ocSession.client.session.compact({ path: { id: ocSession.sessionId } });
-                await ocSession.client.session.summarize({ path: { id: ocSession.sessionId } });
-                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
-            } catch (e) {
-                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
-            }
             return true;
         }
 
@@ -642,89 +167,123 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return result;
         }
 
-        case 'agents': {
-            const agents = registry.listAgents();
-            const lines = ['🤖 可用 AI Agent:'];
-            for (const a of agents) {
-                const agent = registry.findAgent(a);
-                const available = await agent?.isAvailable().catch(() => false);
-                lines.push(`${available ? '✅' : '❌'} ${a}`);
-            }
-            lines.push('', '切换: /oc /cc /cx /copilot');
-            await adapter.reply(ctx.threadId, lines.join('\n'));
-            return true;
-        }
-
         case 'model': {
             try {
-                if (arg) {
-                    const modelStr = arg.trim();
+                const current = getThreadModel(ctx.threadId);
+                const recent = getRecentModels();
 
-                    // Search mode: /model <keyword>
-                    if (!modelStr.includes('/')) {
-                        const opencode = await initOpenCode();
-                        if (!opencode) {
-                            await adapter.reply(ctx.threadId, '❌ OpenCode 不可用');
-                            return true;
+                if (!arg) {
+                    let msg = current
+                        ? `🧠 当前: ${current.providerID}/${current.modelID}\n\n`
+                        : '';
+                    if (recent.length > 0) {
+                        msg += '最近使用:\n';
+                        for (const r of recent) {
+                            const mark = (current && r.providerID === current.providerID && r.modelID === current.modelID) ? ' ←' : '';
+                            msg += `  ${r.providerID}/${r.modelID}${mark}\n`;
                         }
-                        const result = await opencode.client.provider.list();
-                        if (result.error || !result.data?.all) {
-                            await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
-                            return true;
-                        }
-                        const q = modelStr.toLowerCase();
-                        const matches = [];
-                        for (const p of result.data.all) {
-                            for (const mid of Object.keys(p.models || {})) {
-                                if (`${p.id}/${mid}`.toLowerCase().includes(q)) {
-                                    matches.push(`${p.id}/${mid}`);
-                                }
-                            }
-                        }
-                        if (matches.length === 0) {
-                            await adapter.reply(ctx.threadId, `🔍 未找到包含 "${modelStr}" 的模型`);
-                            return true;
-                        }
-                        matches.sort();
-                        let msg = `🔍 搜索 "${modelStr}" (${matches.length} 个):\n`;
-                        for (const m of matches.slice(0, 30)) {
-                            msg += `  ${m}\n`;
-                        }
-                        msg += '\n切换: /model <provider>/<modelID>';
-                        const msgs = splitMessage(msg);
-                        for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                        msg += '\n';
+                    }
+                    msg += '用法:\n  /model list — 显示全部模型\n  /model 关键词 — 搜索\n  /model <provider>/<id> — 切换';
+                    const msgs = splitMessage(msg);
+                    for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                    return true;
+                }
+
+                // Numbered selection: /model 3
+                if (/^\d+$/.test(arg.trim())) {
+                    const idx = parseInt(arg.trim(), 10);
+                    const providers = await listProviders();
+                    if (!providers) {
+                        await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
                         return true;
                     }
-
-                    const entry = setThreadModel(ctx.threadId, modelStr);
+                    const allModels = [];
+                    for (const p of providers) {
+                        for (const mid of Object.keys(p.models || {})) {
+                            allModels.push(`${p.id}/${mid}`);
+                        }
+                    }
+                    if (idx < 1 || idx > allModels.length) {
+                        await adapter.reply(ctx.threadId, `❌ 序号 ${idx} 超出范围 (1-${allModels.length})`);
+                        return true;
+                    }
+                    const selected = allModels[idx - 1];
+                    const entry = setThreadModel(ctx.threadId, selected);
                     if (entry) {
-                        await adapter.reply(ctx.threadId, `✅ 已切换模型至: ${entry.providerID}/${entry.modelID}`);
-                    } else {
-                        await adapter.reply(ctx.threadId, '❌ 格式错误，请使用: /model <provider>/<modelID>');
+                        await adapter.reply(ctx.threadId, `✅ 已切换至 #${idx}: ${entry.providerID}/${entry.modelID}`);
                     }
                     return true;
                 }
-                const current = getThreadModel(ctx.threadId);
-                let msg = current
-                    ? `🧠 当前模型: ${current.providerID}/${current.modelID}\n\n`
-                    : '';
 
-                const recent = getRecentModels();
-                if (recent.length > 0) {
-                    msg += '最近使用:\n';
-                    for (const r of recent) {
-                        const mark = (current && r.providerID === current.providerID && r.modelID === current.modelID) ? ' ←' : '';
-                        msg += `  ${r.providerID}/${r.modelID}${mark}\n`;
+                // /model list — show all models with numbers
+                if (arg.trim().toLowerCase() === 'list') {
+                    const providers = await listProviders();
+                    if (!providers) {
+                        await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
+                        return true;
                     }
-                    msg += '\n';
+                    const lines = [];
+                    let n = 0;
+                    for (const p of providers) {
+                        const mids = Object.keys(p.models || {});
+                        if (mids.length === 0) continue;
+                        lines.push(`\n【${p.id}】`);
+                        for (const mid of mids) {
+                            n++;
+                            const mark = (current && current.providerID === p.id && current.modelID === mid) ? ' ←' : '';
+                            lines.push(`  ${n}. ${p.id}/${mid}${mark}`);
+                        }
+                    }
+                    if (n === 0) {
+                        await adapter.reply(ctx.threadId, '❌ 没有可用模型');
+                        return true;
+                    }
+                    lines.push(`\n切换: /model <序号>`);
+                    const msgs = splitMessage(lines.join('\n'));
+                    for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                    return true;
                 }
-                if (!current) {
-                    msg += '提示: 用 /model <关键词> 搜索模型，/model <provider>/<modelID> 切换\n';
+
+                // Search: /model <keyword>
+                if (!arg.includes('/')) {
+                    const providers = await listProviders();
+                    if (!providers) {
+                        await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
+                        return true;
+                    }
+                    const q = arg.trim().toLowerCase();
+                    const matches = [];
+                    for (const p of providers) {
+                        for (const mid of Object.keys(p.models || {})) {
+                            const name = `${p.id}/${mid}`;
+                            if (name.toLowerCase().includes(q)) {
+                                matches.push(name);
+                            }
+                        }
+                    }
+                    if (matches.length === 0) {
+                        await adapter.reply(ctx.threadId, `🔍 未找到包含 "${arg.trim()}" 的模型`);
+                        return true;
+                    }
+                    matches.sort();
+                    let msg = `🔍 "${arg.trim()}" (${matches.length}):\n`;
+                    for (const m of matches.slice(0, 30)) {
+                        msg += `  ${m}\n`;
+                    }
+                    msg += '\n切换: /model <provider>/<modelID>';
+                    const msgs = splitMessage(msg);
+                    for (const m of msgs) await adapter.reply(ctx.threadId, m);
+                    return true;
+                }
+
+                // Direct switch: /model <provider>/<modelID>
+                const entry = setThreadModel(ctx.threadId, arg.trim());
+                if (entry) {
+                    await adapter.reply(ctx.threadId, `✅ 已切换至: ${entry.providerID}/${entry.modelID}`);
                 } else {
-                    msg += '用法: /model <关键词> — 搜索\n  /model <provider>/<modelID> — 切换';
+                    await adapter.reply(ctx.threadId, '❌ 格式错误，使用: /model <provider>/<modelID>');
                 }
-                const msgs = splitMessage(msg);
-                for (const m of msgs) await adapter.reply(ctx.threadId, m);
                 return true;
             } catch (e) {
                 await adapter.reply(ctx.threadId, `❌ 模型操作失败: ${e.message}`);
@@ -733,30 +292,212 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         }
 
 
-        case 'demo': {
-            const argText = (arg || '').trim().toLowerCase();
-            if (argText === 'off' || argText === 'exit' || argText === 'stop') {
-                setDemoMode(ctx.threadId, false);
-                await adapter.reply(ctx.threadId, '⏹️ 已退出沙箱模式');
-                return true;
-            }
-            setDemoMode(ctx.threadId, true);
-            let msg = '🎮 沙箱模式已启动\n\n在此模式下所有命令返回模拟输出，无需连接 OpenCode。\n\n';
-            msg += '试试发送: /help /status /model /agents /loop /copy\n';
-            msg += '发送 /demo off 退出';
-            await adapter.reply(ctx.threadId, msg);
-            return true;
-        }
-
         case 'diagnose': {
             const { checkConnection } = await import('../opencode/client.js');
             const diag = ['🔍 诊断报告\n'];
             diag.push(`OpenCode: ${await checkConnection().then(() => '✅').catch(() => '❌')}`);
             diag.push(`七牛云: ${process.env.QINIU_ACCESS_KEY ? '✅' : '❌'}`);
-            diag.push(`项目目录: ${session.projectDir || globalThis.__autoProjectDir || '❌ 未设置'}`);
+            diag.push(`项目目录: ${globalThis.__autoProjectDir || '❌ 未设置'}`);
             diag.push(`会话: ${openCodeSessions?.get(ctx.threadId) ? '✅' : '❌'}`);
             const msgs = splitMessage(diag.join('\n'));
             for (const m of msgs) await adapter.reply(ctx.threadId, m);
+            return true;
+        }
+
+        case 'raw': {
+            const val = arg?.trim().toLowerCase();
+            if (val === 'on' || val === '1' || val === 'true') {
+                setRawDebug(true);
+                await adapter.reply(ctx.threadId, '📄 RAW 输出已开启');
+            } else if (val === 'off' || val === '0' || val === 'false') {
+                setRawDebug(false);
+                await adapter.reply(ctx.threadId, '📄 RAW 输出已关闭');
+            } else {
+                await adapter.reply(ctx.threadId, `📄 RAW 输出当前: ${isRawDebug() ? '🟢 ON' : '🔴 OFF'}\n用法: /raw on 或 /raw off`);
+            }
+            return true;
+        }
+
+        case 'think': {
+            const { setThinkVisible, isThinkVisible } = await import('../opencode/client.js');
+            const val = arg?.trim().toLowerCase();
+            if (val === 'on' || val === '1' || val === 'true') {
+                setThinkVisible(true);
+                await adapter.reply(ctx.threadId, '🤔 思考过程已开启');
+            } else if (val === 'off' || val === '0' || val === 'false') {
+                setThinkVisible(false);
+                await adapter.reply(ctx.threadId, '🤔 思考过程已关闭');
+            } else {
+                await adapter.reply(ctx.threadId, `🤔 思考过程当前: ${isThinkVisible() ? '🟢 ON' : '🔴 OFF'}\n用法: /think on 或 /think off`);
+            }
+            return true;
+        }
+
+        case 'share': {
+            const val = arg?.trim().toLowerCase();
+            const isOwner = hasOwner('weixin') && claimOwnership('weixin', ctx.userId);
+
+            if (!val || val === 'status') {
+                const members = [...sharedRoom.members].join(', ') || '无';
+                await adapter.reply(ctx.threadId, `👥 共享会话\n成员: ${members}\n${sharedRoom.busy ? '⏳ 处理中' : '✅ 空闲'}\n\n/share join — 加入共享\n/share leave — 离开`);
+                return true;
+            }
+            if (val === 'join') {
+                if (sharedRoom.members.size === 0) {
+                    await adapter.reply(ctx.threadId, '👥 暂无共享会话，你就是第一个!');
+                }
+                addSharedMember(ctx.threadId);
+                await adapter.reply(ctx.threadId, '✅ 你已加入共享会话，所有消息将共享给其他成员');
+                return true;
+            }
+            if (val === 'leave') {
+                removeSharedMember(ctx.threadId);
+                await adapter.reply(ctx.threadId, '✅ 你已离开共享会话');
+                return true;
+            }
+            await adapter.reply(ctx.threadId, '❌ 用法: /share — 查看状态\n/share join — 加入\n/share leave — 离开');
+            return true;
+        }
+
+        case 'bind': {
+            const { fetchQRCode, pollQRStatus } = await import('./api.js');
+            const { addBotInstance, saveCredential } = await import('./bot.js');
+
+            const baseUrl = DEFAULT_BASE_URL;
+            await adapter.reply(ctx.threadId, '📱 正在获取二维码...');
+            const qrResp = await fetchQRCode(baseUrl);
+            if (!qrResp.qrcode_img_content) {
+                await adapter.reply(ctx.threadId, '❌ 获取二维码失败');
+                return true;
+            }
+            await adapter.reply(ctx.threadId, `📱 扫码绑定新 Bot:\n${qrResp.qrcode_img_content}`);
+
+            (async () => {
+                const startTime = Date.now();
+                const timeout = 8 * 60 * 1000;
+                let notifiedScanned = false;
+                while (Date.now() - startTime < timeout) {
+                    try {
+                        const status = await pollQRStatus(baseUrl, qrResp.qrcode);
+                        switch (status.status) {
+                            case 'wait':
+                                break;
+                            case 'scaned':
+                                if (!notifiedScanned) {
+                                    await adapter.reply(ctx.threadId, '📱 已扫码，请在手机上确认...');
+                                    notifiedScanned = true;
+                                }
+                                break;
+                            case 'expired':
+                                await adapter.reply(ctx.threadId, '⌛ 二维码已过期，请重新 /bind');
+                                return;
+                            case 'confirmed':
+                                if (!status.bot_token || !status.ilink_bot_id) {
+                                    await adapter.reply(ctx.threadId, '❌ 绑定失败：未收到 Bot Token');
+                                    return;
+                                }
+                                const creds = {
+                                    token: status.bot_token,
+                                    baseUrl: status.baseurl || baseUrl,
+                                    accountId: status.ilink_bot_id,
+                                    userId: status.ilink_user_id,
+                                };
+                                saveCredential(creds);
+                                addBotInstance(creds, openCodeSessions);
+                                await adapter.reply(ctx.threadId, `✅ 新 Bot 绑定成功！账号: ${creds.accountId}`);
+                                return;
+                        }
+                    } catch (e) {
+                        console.error('[bind] poll error:', e);
+                    }
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                await adapter.reply(ctx.threadId, '⌛ 绑定超时，请重新 /bind');
+            })();
+
+            return true;
+        }
+
+        case 'who': {
+            const others = [];
+            for (const [uid] of userAdapterMap) {
+                if (uid !== ctx.threadId) {
+                    others.push(uid);
+                }
+            }
+            if (others.length === 0) {
+                await adapter.reply(ctx.threadId, '👤 只有你一个人在线');
+                return true;
+            }
+            let msg = '👥 在线用户:\n';
+            others.forEach((uid, i) => { msg += `  ${i + 1}. ${uid}\n`; });
+            await adapter.reply(ctx.threadId, msg);
+            return true;
+        }
+
+        case 'push': {
+            const others = [];
+            for (const [uid] of userAdapterMap) {
+                if (uid !== ctx.threadId) {
+                    others.push(uid);
+                }
+            }
+            if (others.length === 0) {
+                await adapter.reply(ctx.threadId, '❌ 没有其他 Bot 用户可推送');
+                return true;
+            }
+            const targetMatch = ctx.arg?.match(/^@(\d+)\s+(.+)/);
+            let msg;
+            let targets;
+            if (targetMatch) {
+                const idx = parseInt(targetMatch[1], 10) - 1;
+                const target = others[idx];
+                if (!target) {
+                    await adapter.reply(ctx.threadId, `❌ 没有序号 ${targetMatch[1]} 的用户，先用 /who 查看`);
+                    return true;
+                }
+                targets = [target];
+                msg = targetMatch[2];
+            } else {
+                targets = others;
+                msg = ctx.arg || '📢 请到项目上处理一下';
+            }
+            let sent = 0;
+            for (const uid of targets) {
+                const targetAdapter = userAdapterMap.get(uid);
+                if (targetAdapter) {
+                    try {
+                        await targetAdapter.reply(uid, msg);
+                        sent++;
+                    } catch (e) {
+                        console.error('[push] send failed:', e.message);
+                    }
+                }
+            }
+            await adapter.reply(ctx.threadId, `✅ 已推送给 ${sent}/${targets.length} 个用户`);
+            return true;
+        }
+
+        case 'auto': {
+            const { startAutoLoop, stopAutoLoop, isAutoRunning } = await import('../autonomous/index.js');
+            const arg = (ctx.arg || '').trim().toLowerCase();
+            if (arg === 'off' || arg === 'stop') {
+                stopAutoLoop();
+                await adapter.reply(ctx.threadId, '⏹ 自主开发已停止');
+                return true;
+            }
+            if (arg === 'status' || arg === '') {
+                const running = isAutoRunning();
+                await adapter.reply(ctx.threadId, running ? '🤖 自主开发运行中' : '⏸ 自主开发未启动');
+                return true;
+            }
+            if (isAutoRunning()) {
+                await adapter.reply(ctx.threadId, '⏳ 已有自主开发任务运行中，先 /auto off 再启动新的');
+                return true;
+            }
+            const goal = ctx.arg || '审查项目代码，找出最需要改进的地方并实施';
+            const autoBroadcast = isSharedMember(ctx.threadId) ? [...sharedRoom.members].filter(tid => tid !== ctx.threadId) : [];
+            startAutoLoop({ adapter, threadId: ctx.threadId, goal, openCodeSessions, broadcastTo: autoBroadcast });
             return true;
         }
 
@@ -765,4 +506,4 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
     }
 }
 
-export { handleAgentSwitch, handleCommand, formatTimeAgo };
+export { handleAgentSwitch, handleCommand };

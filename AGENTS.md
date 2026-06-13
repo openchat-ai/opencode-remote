@@ -1,4 +1,5 @@
 # 项目开发指南
+> **项目昵称**: 遥控器（用户指定的简称，对应 opencode-remote）
 > **记忆系统**: 每次会话请加载 @MEMORY.md 获取项目记忆和经验教训。涉及特定领域时，根据 MEMORY.md 中的路由表读取对应的 memory/ 主题文件。
 ---
 
@@ -31,6 +32,14 @@
 - 模块路径错误（`ERR_MODULE_NOT_FOUND`）
 
 pre-commit hook 在 `git commit` 前自动执行 lint，lint 失败阻止提交。
+
+## 新增命令 checklist（硬约束，违反视为 bug）
+新增任何命令时，必须一次性完成以下三项，缺一不可：
+1. 加入 `dist/core/router.js` 的 `COMMAND_ALIASES`
+2. 加入 `dist/core/router.js` 的 `COMMAND_HELP` + `getHelpText()` 的分组
+3. 加入 `dist/weixin/commands.js`（或对应平台）的 switch case
+
+**顺序**: 先改 router.js（别名 + 帮助文本），后加 handler。三条改完才能算"命令新增完毕"。
 
 ## 代码规范
 

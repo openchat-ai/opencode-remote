@@ -1,5 +1,4 @@
 import { registry } from '../core/registry.js';
-import { sessionManager } from '../core/session.js';
 import { initOpenCode, createSession, sendMessage as sendToOpenCode, checkConnection } from '../opencode/client.js';
 import { parseMessage, routeMessage } from '../core/router.js';
 import { telegramAdapter } from './adapter.js';
@@ -18,7 +17,6 @@ export async function startBot() {
         process.exit(1);
     }
 
-    await sessionManager.start();
     await registry.loadBuiltInPlugins();
     await telegramAdapter.start(config);
 
@@ -69,10 +67,6 @@ export async function startBot() {
             if (parsed.type === 'command' && parsed.command === 'reset') {
                 openCodeSessions.delete(message.threadId);
                 opencodeSessionId = null;
-                try {
-                    const session = await sessionManager.getExistingSession(platform, channelId, message.threadId);
-                    if (session) await sessionManager.resetConversation(platform, channelId, message.threadId);
-                } catch (e) { console.warn('[Telegram] Reset error:', e.message); }
             }
 
             if (parsed.type === 'default') {

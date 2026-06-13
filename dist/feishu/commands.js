@@ -1,26 +1,13 @@
-import { getOrCreateSession } from '../core/session.js';
 import { splitMessage } from '../core/notifications.js';
 import { EMOJI } from '../core/types.js';
-import { initOpenCode, createSession, sendMessage, checkConnection, abortSession, resumeSession, revertSessionMessage, unrevertSession, setThreadModel, getThreadModel, getRecentModels } from '../opencode/client.js';
+import { initOpenCode, checkConnection, abortSession, setThreadModel, getThreadModel, getRecentModels, setRawDebug, isRawDebug } from '../opencode/client.js';
 import { claimOwnership } from '../core/auth.js';
-import { COMMAND_ALIASES, detectCommand, getHelpText, DEMO_RESPONSES, setDemoMode, isDemoMode } from '../core/router.js';
+import { getHelpText } from '../core/router.js';
 import { registry } from '../core/registry.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, basename } from 'path';
-
-function formatTimeAgo(timestamp) {
-    const diff = Date.now() - timestamp;
-    const seconds = Math.floor(diff / 1000);
-    if (seconds < 60) return `${seconds}秒前`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}分钟前`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}小时前`;
-    return `${Math.floor(hours / 24)}天前`;
-}
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
 
 async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
-    const session = await getOrCreateSession(ctx.threadId, 'feishu');
     switch (command) {
         case 'start': {
             const result = claimOwnership('feishu', ctx.userId);
@@ -43,19 +30,16 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
 
 🚀 **准备就绪！**
 💬 发送提示词开始编程
-/help — 查看所有指令
-/status — 查看连接状态`);
+/help — 查看所有指令`);
                 }
                 else {
                     await adapter.reply(ctx.threadId, `🚀 OpenCode 远程控制就绪
 
 💬 发送消息给 OpenCode 开始工作
 /help — 查看所有指令
-/status — 查看连接状态
 
 指令:
 /start — 首次认证
-/status — 查看连接
 /reset — 重置会话
 /approve — 同意变更
 /reject — 拒绝变更
@@ -78,34 +62,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         case 'help':
             await adapter.reply(ctx.threadId, getHelpText());
             return true;
-        case 'tutorial': {
-            const { TUTORIAL_STEPS } = await import('../core/router.js');
-            const stepNum = parseInt(arg, 10);
-            const step = !isNaN(stepNum) && stepNum >= 1 && stepNum <= TUTORIAL_STEPS.length ? stepNum : 1;
-            const s = TUTORIAL_STEPS[step - 1];
-            let msg = `📚 教程 · 第 ${s.step}/${TUTORIAL_STEPS.length} 步\n━━━━━━━━━━━━━━━━\n\n${s.title}\n\n${s.desc}\n\n`;
-            if (s.action) msg += `👉 ${s.action}`;
-            msg += `\n\n回复 /tutorial${step < TUTORIAL_STEPS.length ? ` 继续第${step + 1}步` : ''} 进入下一步`;
-            const msgs = splitMessage(msg);
-            for (const m of msgs) await adapter.reply(ctx.threadId, m);
-            return true;
-        }
-        case 'agents': {
-            const agents = registry.listAgents();
-            const lines = ['🤖 可用 AI Agent:'];
-            for (const name of agents) {
-                const agent = registry.findAgent(name);
-                const aliases = agent?.aliases || [];
-                const available = await agent?.isAvailable().catch(() => false);
-                const status = available ? '✅' : '❌';
-                const aliasStr = aliases.length > 0 ? ` (${aliases.join(', ')})` : '';
-                lines.push(`${status} ${name}${aliasStr}`);
-            }
-            lines.push('');
-            lines.push('切换: /oc /cc /cx /copilot');
-            await adapter.reply(ctx.threadId, lines.join('\n'));
-            return true;
-        }
         case 'model': {
             try {
                 if (arg) {
@@ -118,14 +74,14 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                             await adapter.reply(ctx.threadId, '❌ OpenCode 不可用');
                             return true;
                         }
-                        const result = await opencode.client.provider.list();
-                        if (result.error || !result.data?.all) {
+                        const result = await opencode.client.config.providers();
+                        if (result.error || !result.data?.providers) {
                             await adapter.reply(ctx.threadId, '❌ 无法获取模型列表');
                             return true;
                         }
                         const q = modelStr.toLowerCase();
                         const matches = [];
-                        for (const p of result.data.all) {
+                        for (const p of result.data.providers) {
                             for (const mid of Object.keys(p.models || {})) {
                                 if (`${p.id}/${mid}`.toLowerCase().includes(q)) {
                                     matches.push(`${p.id}/${mid}`);
@@ -197,23 +153,18 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
                 await adapter.reply(ctx.threadId, `❌ ${agentName} 不可用`);
                 return true;
             }
-            session.currentAgent = agentName;
             if (!arg) {
                 await adapter.reply(ctx.threadId, `✅ 已切换到 ${agentName}`);
                 return true;
             }
             await adapter.sendTypingIndicator(ctx.threadId);
             try {
-                const history = session.commandHistory || [];
-                const response = await agent.sendPrompt(session.id, arg, history, { projectDir: session.projectDir || globalThis.__autoProjectDir });
+                const response = await agent.sendPrompt(agentName, arg, [], { projectDir: globalThis.__autoProjectDir });
                 await adapter.sendTypingIndicator(ctx.threadId);
                 const chunks = splitMessage(response || '无响应');
                 for (const chunk of chunks) {
                     await adapter.reply(ctx.threadId, chunk);
                 }
-                session.commandHistory = session.commandHistory || [];
-                session.commandHistory.push({ role: 'user', content: arg });
-                session.commandHistory.push({ role: 'assistant', content: response });
             } catch (error) {
                 await adapter.sendTypingIndicator(ctx.threadId);
                 await adapter.reply(ctx.threadId, `❌ 错误: ${error.message}`);
@@ -221,64 +172,16 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
         case 'approve': {
-            const pending = session.pendingApprovals?.[0];
-            if (!pending) {
-                await adapter.reply(ctx.threadId, '🤷 没有待审批的变更');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '✅ 已批准');
+            await adapter.reply(ctx.threadId, '🤷 没有待审批的变更');
             return true;
         }
         case 'reject': {
-            const pending = session.pendingApprovals?.[0];
-            if (!pending) {
-                await adapter.reply(ctx.threadId, '🤷 没有待拒绝的变更');
-                return true;
-            }
-            session.pendingApprovals.shift();
-            await adapter.reply(ctx.threadId, '❌ 已拒绝');
+            await adapter.reply(ctx.threadId, '🤷 没有待拒绝的变更');
             return true;
         }
 
         case 'files': {
-            const pending = session.pendingApprovals?.[0];
-            if (!pending || !pending.files?.length) {
-                await adapter.reply(ctx.threadId, '📄 此会话没有文件变更');
-                return true;
-            }
-            const fileList = pending.files.map(f => `• ${f.path} (+${f.additions}, -${f.deletions})`).join('\n');
-            await adapter.reply(ctx.threadId, `📄 已修改文件:\n${fileList}`);
-            return true;
-        }
-        case 'status': {
-            const openCodeConnected = await checkConnection();
-            const actualSession = openCodeSessions?.get(ctx.threadId) ||
-                                 (session.opencodeSessionId ? { sessionId: session.opencodeSessionId } : null);
-            const running = session.taskStartTime ? Math.round((Date.now() - session.taskStartTime) / 1000) : 0;
-            let msg = `${openCodeConnected ? '✅' : '❌'} OpenCode ${openCodeConnected ? '在线' : '离线'}\n\n`;
-            msg += `会话: ${actualSession?.sessionId?.slice(0, 8) || '无'}\n`;
-            if (running > 0) {
-                const m = Math.floor(running / 60);
-                const s = running % 60;
-                msg += `运行中: ${m}分${s}秒\n`;
-            }
-            if (session.currentTool) {
-                msg += `当前工具: ${session.currentTool}\n`;
-            }
-            if (session.modifiedFiles?.length > 0 || session.modifiedFiles?.size > 0) {
-                msg += `已修改: ${(session.modifiedFiles?.length || session.modifiedFiles?.size || 0)} 个文件\n`;
-            }
-            const projectDir = session.projectDir || globalThis.__autoProjectDir;
-            if (projectDir) {
-                msg += `项目目录: ${projectDir}\n`;
-            } else {
-                msg += `项目目录: 未设置\n`;
-            }
-            msg += `工作目录: ${process.cwd()}\n`;
-            if (session.originalProjectDir && session.originalProjectDir !== projectDir) {
-                msg += `原始目录: ${session.originalProjectDir}\n`;
-            }
-            await adapter.reply(ctx.threadId, msg);
+            await adapter.reply(ctx.threadId, '📄 此会话没有文件变更');
             return true;
         }
         case 'reset': {
@@ -286,35 +189,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             if (oldSession) {
                 abortSession(oldSession).catch(() => {});
             }
-            session.pendingApprovals = [];
-            session.opencodeSessionId = undefined;
-            session.loopMode = false;
-            session.loopPrompt = null;
-            session.projectDir = null;
-            session.currentAgent = null;
-            session.messages = [];
-            session.commandHistory = [];
-            session.taskStartTime = null;
-            session.currentTool = null;
-            session.modifiedFiles = null;
-            session.lastUserMessage = null;
-            session._lastPrompt = null;
-            session._contextScope = null;
-            session.originalProjectDir = null;
-            session._switchSessionList = null;
-            session._deleteSessionList = null;
-            session._pendingSwitchSession = null;
-            session._editTarget = null;
-            session._editList = null;
-            session._editSessionId = null;
-            session._historyList = null;
-            session._forkList = null;
-            session._forkSessionId = null;
-            session.expertMode = false;
-            session.systemPrompt = null;
-            session._analyzeMode = false;
-            session._analyzeTask = null;
-            session._showSessionState = null;
             openCodeSessions?.delete(ctx.threadId);
             globalThis.__latestOpenCodeSession = null;
             await adapter.reply(ctx.threadId, '🔄 会话已重置，下次发送消息将创建新会话');
@@ -327,131 +201,6 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             } else {
                 await adapter.reply(ctx.threadId, '❌ 仍离线，请检查 OpenCode 是否运行中');
             }
-            return true;
-        }
-        case 'sessions': {
-            try {
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const result = await opencode.client.session.list();
-                if (result.error || !result.data || result.data.length === 0) {
-                    await adapter.reply(ctx.threadId, '📭 暂无会话');
-                    return true;
-                }
-                const sorted = result.data.sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0));
-                session._switchSessionList = sorted;
-                session._showSessionState = true;
-                let msg = '📂 选择会话（回复编号）：\n\n';
-                sorted.slice(0, 10).forEach((s, i) => {
-                    const n = i + 1;
-                    const title = s.title || '无标题';
-                    const time = s.updated_at ? formatTimeAgo(s.updated_at * 1000) : '';
-                    msg += `${n}. ${title} (${time})\n`;
-                });
-                if (sorted.length > 10) {
-                    msg += `\n... 共 ${sorted.length} 个会话`;
-                }
-                msg += '\n\n回复编号切换会话';
-                await adapter.reply(ctx.threadId, msg);
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 获取会话失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'delsessions': {
-            try {
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const result = await opencode.client.session.list();
-                if (result.error || !result.data || result.data.length === 0) {
-                    await adapter.reply(ctx.threadId, '📭 暂无会话可删除');
-                    return true;
-                }
-                const sorted = result.data.sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0));
-                session._deleteSessionList = sorted;
-                let msg = '🗑️ 选择要删除的会话（回复编号）：\n\n';
-                sorted.slice(0, 10).forEach((s, i) => {
-                    const n = i + 1;
-                    const title = s.title || '无标题';
-                    const time = s.updated_at ? formatTimeAgo(s.updated_at * 1000) : '';
-                    msg += `${n}. ${title} (${time})\n`;
-                });
-                if (sorted.length > 10) {
-                    msg += `\n... 共 ${sorted.length} 个会话`;
-                }
-                msg += '\n\n回复编号删除';
-                await adapter.reply(ctx.threadId, msg);
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 获取会话失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'loop': {
-            const argText = arg || '';
-            if (argText === 'off' || argText === 'stop') {
-                session.loopMode = false;
-                session.loopPrompt = null;
-                session.loopIterationCount = 0;
-                session.loopStartTime = null;
-                saveSessionMapping();
-                await adapter.reply(ctx.threadId, '⏹️ 循环任务已停止');
-                return true;
-            }
-            if (argText === 'status') {
-                if (session.loopMode) {
-                    const elapsed = session.loopStartTime
-                        ? `已运行: ${Math.floor((Date.now() - session.loopStartTime) / 60000)}分钟`
-                        : '';
-                    const count = session.loopIterationCount || 0;
-                    const limit = session.loopMaxIterations || 10;
-                    await adapter.reply(ctx.threadId, `🔄 循环任务运行中\n指令: ${session.loopPrompt || '智能模式'}\n迭代: ${count}/${limit} ${elapsed}`);
-                } else {
-                    await adapter.reply(ctx.threadId, '⏹️ 循环任务未运行\n发送 /loop 开始');
-                }
-                return true;
-            }
-            session.loopMode = true;
-            session.loopPrompt = argText || null;
-            session.lastLoopTime = Date.now();
-            session.loopStartTime = Date.now();
-            session.loopIterationCount = 0;
-            session.loopMaxIterations = 10;
-            session.loopMaxTimeMs = 30 * 60 * 1000;
-            saveSessionMapping();
-            const modeDesc = argText ? `指令: ${argText}` : '智能模式（根据上下文自动生成指令）';
-            await adapter.reply(ctx.threadId, `🔄 循环任务已启动\n${modeDesc}\n限制: 最多10次迭代或30分钟\n\n发送 /loop off 停止`);
-            return true;
-        }
-
-        case 'refresh': {
-            const ocSession = openCodeSessions.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            await adapter.reply(ctx.threadId, '🔄 正在刷新会话...');
-            try {
-                await ocSession.client.session.compact({ path: { id: ocSession.sessionId } });
-                await ocSession.client.session.summarize({ path: { id: ocSession.sessionId } });
-                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
-            } catch (e) {
-                await adapter.reply(ctx.threadId, '✅ 会话已刷新');
-            }
-            return true;
-        }
-
-        case 'upload': {
-            await adapter.reply(ctx.threadId, 'ℹ️ 上传功能目前仅在微信客户端可用。\n请使用微信客户端上传文件。');
-            return true;
-        }
-        case 'delete': {
-            await adapter.reply(ctx.threadId, 'ℹ️ 删除功能目前仅在微信客户端可用。\n请使用微信客户端管理上传文件。');
             return true;
         }
         case 'restart': {
@@ -479,145 +228,27 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
 
-
-
-
-        case 'copy': {
-            const ocSession = openCodeSessions?.get(ctx.threadId);
-            if (!ocSession) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            try {
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const msgsResult = await opencode.client.session.messages({
-                    path: { id: ocSession.sessionId },
-                    query: { limit: 1 }
-                });
-                if (msgsResult.error || !msgsResult.data || msgsResult.data.length === 0) {
-                    await adapter.reply(ctx.threadId, '❌ 无法获取最新消息');
-                    return true;
-                }
-                let latestMsg = msgsResult.data[0];
-                if (latestMsg.info?.role !== 'assistant') {
-                    const allMsgsResult = await opencode.client.session.messages({
-                        path: { id: ocSession.sessionId },
-                        query: { limit: 10 }
-                    });
-                    if (allMsgsResult.error || !allMsgsResult.data) {
-                        await adapter.reply(ctx.threadId, '❌ 无法获取会话消息');
-                        return true;
-                    }
-                    const aiMsg = allMsgsResult.data.find(m => m.info?.role === 'assistant');
-                    if (!aiMsg) {
-                        await adapter.reply(ctx.threadId, '❌ 未找到 AI 回复');
-                        return true;
-                    }
-                    latestMsg = aiMsg;
-                }
-                let content = '';
-                if (latestMsg.parts) {
-                    for (const part of latestMsg.parts) {
-                        if (part.type === 'text') {
-                            content += part.text + '\n';
-                        }
-                        if (part.type === 'code') {
-                            content += `\`\`\`${part.language || ''}\n${part.code}\n\`\`\`\n`;
-                        }
-                        if (part.type === 'file' && part.content) {
-                            content += `📁 ${part.filename}:\n${part.content}\n`;
-                        }
-                    }
-                }
-                if (!content.trim()) {
-                    await adapter.reply(ctx.threadId, '❌ AI 回复中没有可复制的文本内容');
-                    return true;
-                }
-                await adapter.reply(ctx.threadId, `📋 已复制最新 AI 回复内容:\n\n${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}`);
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 复制失败: ${e.message}`);
-            }
-            return true;
-        }
-        case 'revert': {
-            const ocS = openCodeSessions?.get(ctx.threadId);
-            if (!ocS) {
-                await adapter.reply(ctx.threadId, '❌ 没有活跃的会话');
-                return true;
-            }
-            try {
-                if (arg === 'undo') {
-                    const ok = await unrevertSession(ocS.sessionId);
-                    if (ok) {
-                        await adapter.reply(ctx.threadId, '↩️ 已恢复撤销的内容');
-                    } else {
-                        await adapter.reply(ctx.threadId, '❌ 恢复失败');
-                    }
-                    return true;
-                }
-                const opencode = await initOpenCode();
-                if (!opencode) {
-                    await adapter.reply(ctx.threadId, '❌ 无法连接 OpenCode');
-                    return true;
-                }
-                const msgsResult = await opencode.client.session.messages({ path: { id: ocS.sessionId } });
-                if (msgsResult.error || !msgsResult.data) {
-                    await adapter.reply(ctx.threadId, '❌ 无法获取消息');
-                    return true;
-                }
-                const assistantMsgs = msgsResult.data.filter(m => m.info?.role === 'assistant' && m.time?.created);
-                if (assistantMsgs.length === 0) {
-                    await adapter.reply(ctx.threadId, '📭 没有可撤销的消息');
-                    return true;
-                }
-                const lastMsg = assistantMsgs[assistantMsgs.length - 1];
-                const ok = await revertSessionMessage(ocS.sessionId, lastMsg.id);
-                if (ok) {
-                    const preview = lastMsg.info?.content?.slice(0, 100) || '(无内容)';
-                    await adapter.reply(ctx.threadId, `↩️ 已撤销最近的消息\n\n${preview}\n\n发送 /revert undo 恢复`);
-                } else {
-                    await adapter.reply(ctx.threadId, '❌ 撤销失败');
-                }
-            } catch (e) {
-                await adapter.reply(ctx.threadId, `❌ 撤销失败: ${e.message}`);
-            }
-            return true;
-        }
-
-
-
-
-
-
-
-        case 'demo': {
-            const argText = (arg || '').trim().toLowerCase();
-            if (argText === 'off' || argText === 'exit' || argText === 'stop') {
-                setDemoMode(ctx.threadId, false);
-                await adapter.reply(ctx.threadId, '⏹️ 已退出沙箱模式');
-                return true;
-            }
-            setDemoMode(ctx.threadId, true);
-            let msg = '🎮 沙箱模式已启动\n\n在此模式下所有命令返回模拟输出，无需连接 OpenCode。\n\n';
-            msg += '试试发送: /help /status /model /agents /loop /copy\n';
-            msg += '发送 /demo off 退出';
-            await adapter.reply(ctx.threadId, msg);
-            return true;
-        }
-
         case 'diagnose': {
             const { checkConnection } = await import('../opencode/client.js');
             const diag = ['🔍 诊断报告\n'];
             diag.push(`OpenCode: ${await checkConnection().then(() => '✅').catch(() => '❌')}`);
             diag.push(`七牛云: ${process.env.QINIU_ACCESS_KEY ? '✅' : '❌'}`);
-            diag.push(`项目目录: ${session.projectDir || globalThis.__autoProjectDir || '❌ 未设置'}`);
             diag.push(`会话: ${openCodeSessions?.get(ctx.threadId) ? '✅' : '❌'}`);
             const msgs = splitMessage(diag.join('\n'));
             for (const m of msgs) await adapter.reply(ctx.threadId, m);
+            return true;
+        }
+        case 'raw': {
+            const val = arg?.trim().toLowerCase();
+            if (val === 'on' || val === '1' || val === 'true') {
+                setRawDebug(true);
+                await adapter.reply(ctx.threadId, '📄 RAW 输出已开启');
+            } else if (val === 'off' || val === '0' || val === 'false') {
+                setRawDebug(false);
+                await adapter.reply(ctx.threadId, '📄 RAW 输出已关闭');
+            } else {
+                await adapter.reply(ctx.threadId, `📄 RAW 输出当前: ${isRawDebug() ? '🟢 ON' : '🔴 OFF'}\n用法: /raw on 或 /raw off`);
+            }
             return true;
         }
         default:
@@ -626,4 +257,4 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
     }
 }
 
-export { handleCommand, formatTimeAgo };
+export { handleCommand };

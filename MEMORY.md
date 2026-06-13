@@ -6,7 +6,7 @@
 
 ## 最近会话摘要
 
-<!-- 格式：- [YYYY-MM-DD] 简要总结 -->
+- [2026-06-11] 移除了全部 session 磁盘持久化：`session.js` 改为纯内存，删除 `session-mapping.json` 和 `sessions/` 目录，简化 forwardToOpenCode 不再自动 resume OC 会话，删除跨线程广播代码，清理各处 saveSessionMapping 调用
 
 ## 主题文件路由表
 

@@ -68,7 +68,7 @@ async function apiFetch(params) {
 // Login APIs
 // ---------------------------------------------------------------------------
 /**
- * Fetch QR code for login
+ * Fetch QR code for login (admin auth)
  */
 export async function fetchQRCode(baseUrl = DEFAULT_BASE_URL, botType = '3') {
     const base = ensureTrailingSlash(baseUrl);
