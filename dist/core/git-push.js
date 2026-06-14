@@ -17,7 +17,7 @@ const DEFAULT_MIRRORS = [
 function loadCustomMirrors() {
     const localMirrors = join(process.cwd(), '.gitmirrors');
     if (existsSync(localMirrors)) {
-        return readFileSync(localMirrors, 'utf-8').split('\n').map(l => l.trim()).filter(Boolean);
+        return readFileSync(localMirrors, 'utf-8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
     }
     const globalEnv = join(homedir(), '.opencode-remote', '.env');
     if (existsSync(globalEnv)) {

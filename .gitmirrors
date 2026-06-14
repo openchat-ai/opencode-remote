@@ -1,4 +1,7 @@
-# Git 镜像推送配置（按顺序尝试，成功即停）
-# 填你的仓库地址，支持 HTTPS 和 SSH
-https://github.com/openchat-ai/opencode-remote.git
-git@github.com:openchat-ai/opencode-remote.git
+gh-proxy.com
+ghfast.top
+mirror.ghproxy.com
+ghproxy.com
+gh-proxy.ygxz.in
+codeload.github.com
+github.com
