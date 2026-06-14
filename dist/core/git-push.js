@@ -85,11 +85,22 @@ export function gitPush({ message, branch } = {}) {
         return { ok: false, error: `无法解析 remote URL: ${originUrl}` };
     }
 
+    // 从 gh CLI 提取 token（如果 remote URL 里没有的话）
+    let pushAuth = parsed.auth;
+    if (originUrl.startsWith('https://') && !originUrl.includes('@')) {
+        try {
+            const ghToken = execSync('gh auth token', { encoding: 'utf-8' }).trim();
+            if (ghToken) {
+                pushAuth = `https://${ghToken}@`;
+            }
+        } catch (_) { /* gh not available */ }
+    }
+
     const mirrors = loadCustomMirrors();
     const results = [];
 
     for (const host of mirrors) {
-        const pushUrl = parsed.auth + host + parsed.userRepo;
+        const pushUrl = pushAuth + host + parsed.userRepo;
         const remoteName = `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         console.log(`[git-push] trying ${host}...`);
         try {
