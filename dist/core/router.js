@@ -21,6 +21,7 @@ export const COMMAND_ALIASES = {
     invite: ['invite'],
     push: ['push'],
     who: ['who'],
+    deploy: ['deploy', 'gitpush'],
     auto: ['auto'],
 };
 
@@ -126,6 +127,7 @@ const COMMAND_HELP = {
     bind: '绑定新 Bot 用户',
     push: '推送消息给其他 Bot 用户',
     who: '查看在线用户',
+    deploy: '推送代码到所有 Git 镜像',
     auto: '自主开发模式',
 };
 
@@ -161,7 +163,7 @@ export function getHelpText() {
         ['oc', 'cc', 'cx', 'copilot'],        // Agent
         ['model', 'raw', 'think'],            // 配置
         ['share', 'bind', 'push', 'who'],  // 协作
-        ['expert', 'auto'],                   // 专家+自主
+        ['expert', 'deploy', 'auto'],       // 专家+部署+自主
     ];
     let first = true;
     for (const group of groups) {

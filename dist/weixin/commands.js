@@ -501,6 +501,19 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
 
+        case 'deploy': {
+            const { gitPush } = await import('../core/git-push.js');
+            await adapter.reply(ctx.threadId, '📤 正在推送代码...');
+            const result = gitPush({ message: ctx.arg || undefined });
+            if (result.ok) {
+                await adapter.reply(ctx.threadId, `✅ 推送成功: ${result.successUrl}`);
+            } else {
+                const details = result.results.map(r => `${r.ok ? '✅' : '❌'} ${r.url}${r.error ? ': ' + r.error : ''}`).join('\n');
+                await adapter.reply(ctx.threadId, `❌ 推送失败:\n${details}`);
+            }
+            return true;
+        }
+
         default:
             return false;
     }
