@@ -60,8 +60,14 @@ export class ClaudeCodeAgentAdapter {
                 shell: true,
                 cwd: safeCwd,
             };
-            console.log(`[claude-code] ${args.join(' ')}`);
-            const proc = spawn('claude', args, opts);
+            // shell:true on Windows cmd.exe interprets \n as command separators,
+            // so multi-line prompts get truncated to the first line.
+            // Collapse newlines + extra whitespace to single spaces.
+            const safeArgs = args.map(a =>
+                typeof a === 'string' ? a.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() : a
+            );
+            console.log(`[claude-code] ${safeArgs.join(' ')}`);
+            const proc = spawn('claude', safeArgs, opts);
             if (threadId) registerAgentProcess(threadId, proc, 'claude-code');
             let stdout = '';
             let stderr = '';
@@ -101,7 +107,7 @@ function buildContextualPrompt(prompt, history) {
         const label = m.role === 'user' ? 'User' : 'Assistant';
         return `${label}: ${m.content}`;
     }).join('\n');
-    return `Continue the conversation as the assistant. Respond naturally in the same language as the user.\n\n${lines}\nUser: ${prompt}\nAssistant:`;
+    return `[Previous conversation — for context only, answer the LATEST question below]\n\n${lines}\n\n[Latest question]\n${prompt}`;
 }
 
 // Exported for tests

@@ -484,11 +484,17 @@ describe('Scenario 9: Multi-turn prompt formatting (buildContextualPrompt)', () 
         const out = buildContextualPrompt('it says TS2304', history);
         assert.match(out, /User: I am working on a TypeScript compiler/);
         assert.match(out, /Assistant: I can help with that\. What error\?/);
-        assert.match(out, /User: it says TS2304/);
-        // Critical: must start with "Continue the conversation" so Claude doesn't
-        // misread the conversation meta-language as instructions
-        assert.ok(out.startsWith('Continue the conversation'),
-            'must start with Continue-the-conversation prefix to avoid meta-language confusion');
+        assert.match(out, /it says TS2304/);
+        // CRITICAL: must NOT contain "Continue the conversation" prefix — that triggered
+        // claude-code CLI's "I don't have prior context" refusal (turn 2+ bug)
+        assert.ok(!out.includes('Continue the conversation'),
+            'must NOT use Continue-the-conversation prefix (triggers claude-code session-memory check)');
+        // CRITICAL: must NOT end with "Assistant:" — that hints mid-conversation continuation
+        assert.ok(!out.trimEnd().endsWith('Assistant:'),
+            'must NOT end with Assistant: (claude-code refuses without session memory)');
+        // Should mark history as reference and current question as target
+        assert.match(out, /Previous conversation/);
+        assert.match(out, /Latest question/);
     });
 
     it('caps history at last 10 messages (avoid token overflow)', async () => {
@@ -517,7 +523,48 @@ describe('Scenario 9: Multi-turn prompt formatting (buildContextualPrompt)', () 
         assert.match(out, /User: a/);
         assert.match(out, /Assistant: b/);  // missing role defaults to Assistant
         assert.match(out, /User: undefined/);  // missing content renders as undefined
-        assert.match(out, /User: next/);
+        assert.match(out, /\[Latest question\]\s*\n\s*next/);
+    });
+
+    it('no agent uses the broken "Continue the conversation" format', async () => {
+        // Regression test: all 4 agents (claude-code, codex, copilot, opencode) must
+        // avoid the prefix that triggered claude-code CLI's session-memory refusal
+        const fs = await import('fs');
+        const path = await import('path');
+        const distRoot = path.resolve(import.meta.dirname, D);
+        const agents = [
+            'claude-code',
+            'codex',
+            'copilot',
+            'opencode',
+        ];
+        for (const name of agents) {
+            const file = path.join(distRoot, 'plugins', 'agents', name, 'index.js');
+            const src = fs.readFileSync(file, 'utf8');
+            assert.ok(!src.includes('Continue the conversation'),
+                `${file} still uses broken "Continue the conversation" format`);
+            assert.ok(!src.includes('Continue the conversation as the AI assistant.'),
+                `${file} still uses broken format variant`);
+        }
+    });
+
+    it('all agents strip newlines before passing prompt to shell:true spawn', async () => {
+        // Regression test: shell:true + cmd.exe interprets \n as command separators,
+        // truncating multi-line prompts to the first line (caused "cut off after [Previous").
+        // Every spawn(prompt) call site in agent files must collapse newlines.
+        const fs = await import('fs');
+        const path = await import('path');
+        const distRoot = path.resolve(import.meta.dirname, D);
+        const agents = ['claude-code', 'codex', 'copilot', 'opencode'];
+        for (const name of agents) {
+            const file = path.join(distRoot, 'plugins', 'agents', name, 'index.js');
+            const src = fs.readFileSync(file, 'utf8');
+            // Must contain the newline-collapse pattern somewhere
+            assert.ok(
+                src.includes('replace(/[\\r\\n]+/g'),
+                `${file} does not collapse newlines before shell:true spawn`
+            );
+        }
     });
 });
 

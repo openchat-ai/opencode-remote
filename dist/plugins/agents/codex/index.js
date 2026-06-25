@@ -35,7 +35,7 @@ export class CodexAgentAdapter {
             const label = msg.role === 'user' ? 'User' : 'AI';
             return `${label}: ${msg.content}`;
         }).join('\n');
-        return `Continue the conversation as the AI assistant.\n\n${lines}\nUser: ${prompt}\nAI:`;
+        return `[Previous conversation — for context only, answer the LATEST question below]\n\n${lines}\n\n[Latest question]\n${prompt}`;
     }
 
     extractErrorMessage(stdout, stderr) {
@@ -48,9 +48,14 @@ export class CodexAgentAdapter {
         return first || null;
     }
     
-    callCodex(prompt, threadId) {
+callCodex(prompt, threadId) {
         return new Promise((resolve) => {
-            const proc = spawn('codex', ['--prompt', prompt], {
+            // shell:true on Windows cmd.exe interprets \n as command separators.
+            // Collapse newlines + extra whitespace to single spaces.
+            const safePrompt = typeof prompt === 'string'
+                ? prompt.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim()
+                : prompt;
+            const proc = spawn('codex', ['exec', safePrompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             });
