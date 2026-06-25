@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -55,6 +55,14 @@ function parseOriginUrl(url) {
     return { auth, host, userRepo };
 }
 
+// Whitelist validation for git refs (branch names, remote names). Git itself
+// also validates these, but we add a defensive check so a malicious caller
+// can't pass things like "main && rm -rf /" (even though execFileSync + args
+// array would block shell injection on its own, this is defense in depth).
+function isValidGitRef(s) {
+    return typeof s === 'string' && /^[a-zA-Z0-9._\/-]+$/.test(s) && s.length > 0 && s.length < 256;
+}
+
 /**
  * @param {{ message?: string, branch?: string }} [opts]
  */
@@ -64,22 +72,30 @@ export function gitPush(opts) {
 
     let currentBranch;
     try {
-        currentBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+        currentBranch = execFileSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf-8' }).trim();
     } catch (e) {
         return { ok: false, error: '不在 git 仓库中' };
     }
     const targetBranch = branch || currentBranch;
 
-    const status = execSync('git status --porcelain', { cwd, encoding: 'utf-8' }).trim();
+    // Defensive validation of branch name (caller-supplied)
+    if (branch && !isValidGitRef(branch)) {
+        return { ok: false, error: `非法 branch 名称: ${branch}` };
+    }
+
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf-8' }).trim();
     if (status) {
-        execSync('git add -A', { cwd });
+        execFileSync('git', ['add', '-A'], { cwd });
         const msg = (message || `auto update ${new Date().toISOString().slice(0, 19)}`).replace(/"/g, '\\"');
-        execSync(`git commit -m "${msg}"`, { cwd, stdio: 'pipe' });
+        // execFileSync with args array — msg is passed as a single argv element
+        // to git, never interpreted by shell. Even if msg contains `;` or `&`
+        // or shell metachars, git just stores it as the commit message.
+        execFileSync('git', ['commit', '-m', msg], { cwd, stdio: 'pipe' });
     }
 
     let originUrl;
     try {
-        originUrl = execSync('git remote get-url origin', { cwd, encoding: 'utf-8' }).trim();
+        originUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf-8' }).trim();
     } catch (e) {
         return { ok: false, error: '没有找到 remote origin' };
     }
@@ -93,7 +109,7 @@ export function gitPush(opts) {
     let pushAuth = parsed.auth;
     if (originUrl.startsWith('https://') && !originUrl.includes('@')) {
         try {
-            const ghToken = execSync('gh auth token', { encoding: 'utf-8' }).trim();
+            const ghToken = execFileSync('gh', ['auth', 'token'], { encoding: 'utf-8' }).trim();
             if (ghToken) {
                 pushAuth = `https://${ghToken}@`;
             }
@@ -108,13 +124,16 @@ export function gitPush(opts) {
         const remoteName = `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         console.log(`[git-push] trying ${host}...`);
         try {
-            execSync(`git remote add ${remoteName} "${pushUrl}"`, { cwd, stdio: 'pipe' });
-            execSync(`git push ${remoteName} ${targetBranch} --follow-tags`, { cwd, stdio: 'pipe', timeout: 30000 });
-            execSync(`git remote remove ${remoteName}`, { cwd, stdio: 'pipe' });
+            // All execFileSync calls below use args arrays — no shell interpolation.
+            // remoteName, pushUrl, targetBranch, branch are passed as argv elements,
+            // never interpreted by shell.
+            execFileSync('git', ['remote', 'add', remoteName, pushUrl], { cwd, stdio: 'pipe' });
+            execFileSync('git', ['push', remoteName, targetBranch, '--follow-tags'], { cwd, stdio: 'pipe', timeout: 30000 });
+            execFileSync('git', ['remote', 'remove', remoteName], { cwd, stdio: 'pipe' });
             results.push({ host, ok: true, url: pushUrl });
             return { ok: true, results, successUrl: pushUrl };
         } catch (e) {
-            try { execSync(`git remote remove ${remoteName}`, { cwd, stdio: 'pipe' }); } catch (_) {}
+            try { execFileSync('git', ['remote', 'remove', remoteName], { cwd, stdio: 'pipe' }); } catch (_) {}
             const msg = e.stderr?.toString()?.trim() || e.message || '';
             results.push({ host, ok: false, url: pushUrl, error: msg.slice(0, 150) });
         }

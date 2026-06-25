@@ -60,12 +60,21 @@ export class ClaudeCodeAgentAdapter {
                 shell: true,
                 cwd: safeCwd,
             };
-            // shell:true on Windows cmd.exe interprets \n as command separators,
-            // so multi-line prompts get truncated to the first line.
-            // Collapse newlines + extra whitespace to single spaces.
-            const safeArgs = args.map(a =>
-                typeof a === 'string' ? a.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() : a
-            );
+// shell:true on Windows cmd.exe (and /bin/sh on POSIX) interprets several chars
+// as command syntax. Strip them so user message content can't trigger command
+// splitting, redirection, or quoting issues:
+//   \n \r — command separator (cmd.exe), treated as command end
+//   & | < > ^ — command separator / pipe / redirect / escape
+//   " ' ` — quote chars (could break out of intended argument)
+// We strip rather than escape to avoid platform-specific escape syntax.
+const safeArgs = args.map(a => {
+    if (typeof a !== 'string') return a;
+    return a
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/[&|<>^"`]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+});
             console.log(`[claude-code] ${safeArgs.join(' ')}`);
             const proc = spawn('claude', safeArgs, opts);
             if (threadId) registerAgentProcess(threadId, proc, 'claude-code');

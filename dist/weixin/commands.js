@@ -588,7 +588,7 @@ async function handleCommand(adapter, ctx, platform, command, arg, openCodeSessi
         }
 
         case 'lab': {
-            const { execSync } = await import('child_process');
+            const { spawnSync } = await import('child_process');
             const { existsSync } = await import('fs');
             const projectDir = globalThis.__autoProjectDir || process.cwd();
             if (!existsSync(`${projectDir}/bridge/bin/lab.mjs`)) {
@@ -596,8 +596,25 @@ async function handleCommand(adapter, ctx, platform, command, arg, openCodeSessi
                 return true;
             }
             const subCmd = ctx.arg || 'status';
+            // Whitelist: only alnum + - and _ allowed. Defense-in-depth even though
+            // spawnSync with shell:false would block shell injection on its own.
+            if (!/^[a-zA-Z0-9_-]+$/.test(subCmd)) {
+                await adapter.reply(ctx.threadId, `❌ /lab 子命令非法: "${subCmd}"\n仅允许字母数字 + -_`);
+                return true;
+            }
             try {
-                const out = execSync(`node bridge/bin/lab.mjs ${subCmd}`, { cwd: projectDir, encoding: 'utf8', timeout: 15000, maxBuffer: 2048 * 1024 });
+                // spawnSync with shell:false — user input is passed as argv element,
+                // never interpreted by cmd.exe. lab.mjs validates the cmd via its
+                // own if/else chain and falls through to showUsage() for unknown cmds.
+                const result = spawnSync('node', ['bridge/bin/lab.mjs', subCmd], {
+                    cwd: projectDir,
+                    encoding: 'utf8',
+                    timeout: 15000,
+                    maxBuffer: 2048 * 1024,
+                    shell: false,
+                });
+                if (result.error) throw result.error;
+                const out = result.stdout || '';
                 // 格式化输出
                 const formatted = formatLabOutput(out, subCmd);
                 await adapter.reply(ctx.threadId, `📋 Lab ${subCmd}\n${formatted}`);

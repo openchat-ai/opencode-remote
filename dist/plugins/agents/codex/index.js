@@ -50,11 +50,15 @@ export class CodexAgentAdapter {
     
 callCodex(prompt, threadId) {
         return new Promise((resolve) => {
-            // shell:true on Windows cmd.exe interprets \n as command separators.
-            // Collapse newlines + extra whitespace to single spaces.
-            const safePrompt = typeof prompt === 'string'
-                ? prompt.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim()
-                : prompt;
+// shell:true on Windows cmd.exe (and /bin/sh on POSIX) interprets several chars
+// as command syntax. Strip them so user message content can't trigger command
+// splitting, redirection, or quoting issues.
+const safePrompt = typeof prompt === 'string'
+    ? prompt
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/[&|<>^"`]/g, '')
+        .replace(/\s+/g, ' ').trim()
+    : prompt;
             const proc = spawn('codex', ['exec', safePrompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
