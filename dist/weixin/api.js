@@ -129,26 +129,47 @@ export async function getUpdates(params) {
     }
 }
 /**
- * Send a message
+ * Send a message with rate limit retry
  */
 export async function sendMessage(params) {
-    const rawText = await apiFetch({
-        baseUrl: params.baseUrl,
-        endpoint: 'ilink/bot/sendmessage',
-        body: JSON.stringify({
-            ...params.body,
-            base_info: { channel_version: '1.0.0' },
-        }),
-        token: params.token,
-        timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
-        label: 'sendMessage',
-    });
-    try {
-        JSON.parse(rawText);
+    const MAX_ATTEMPTS = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+            const rawText = await apiFetch({
+                baseUrl: params.baseUrl,
+                endpoint: 'ilink/bot/sendmessage',
+                body: JSON.stringify({
+                    ...params.body,
+                    base_info: { channel_version: '1.0.0' },
+                }),
+                token: params.token,
+                timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
+                label: 'sendMessage',
+            });
+            // 微信返回限流错误码时，rawText 含 errcode，重试
+            try {
+                const j = JSON.parse(rawText);
+                if (j && typeof j.errcode === 'number' && (j.errcode === -1001 || j.errcode === -1002 || j.errcode === 45009 || j.errcode === 45047)) {
+                    const backoff = 1000 * attempt;
+                    console.warn(`[sendMessage] rate-limited (errcode=${j.errcode}), retry in ${backoff}ms (${attempt}/${MAX_ATTEMPTS})`);
+                    await new Promise(r => setTimeout(r, backoff));
+                    continue;
+                }
+            } catch (e) { console.debug('[sendMessage] parse error:', e.message); }
+            return;
+        } catch (err) {
+            lastErr = err;
+            if (attempt < MAX_ATTEMPTS && /AbortError|fetch failed|ECONNRESET/i.test(err.message || '')) {
+                const backoff = 1000 * attempt;
+                console.warn(`[sendMessage] transient error, retry in ${backoff}ms: ${err.message}`);
+                await new Promise(r => setTimeout(r, backoff));
+                continue;
+            }
+            throw err;
+        }
     }
-    catch (e) {
-        console.debug('[api] Non-JSON response:', e.message);
-    }
+    throw lastErr;
 }
 /**
  * Get bot config (includes typing_ticket)

@@ -55,7 +55,11 @@ function parseOriginUrl(url) {
     return { auth, host, userRepo };
 }
 
-export function gitPush({ message, branch } = {}) {
+/**
+ * @param {{ message?: string, branch?: string }} [opts]
+ */
+export function gitPush(opts) {
+    const { message, branch } = opts || {};
     const cwd = process.cwd();
 
     let currentBranch;
@@ -107,12 +111,12 @@ export function gitPush({ message, branch } = {}) {
             execSync(`git remote add ${remoteName} "${pushUrl}"`, { cwd, stdio: 'pipe' });
             execSync(`git push ${remoteName} ${targetBranch} --follow-tags`, { cwd, stdio: 'pipe', timeout: 30000 });
             execSync(`git remote remove ${remoteName}`, { cwd, stdio: 'pipe' });
-            results.push({ host, ok: true });
+            results.push({ host, ok: true, url: pushUrl });
             return { ok: true, results, successUrl: pushUrl };
         } catch (e) {
             try { execSync(`git remote remove ${remoteName}`, { cwd, stdio: 'pipe' }); } catch (_) {}
             const msg = e.stderr?.toString()?.trim() || e.message || '';
-            results.push({ host, ok: false, error: msg.slice(0, 150) });
+            results.push({ host, ok: false, url: pushUrl, error: msg.slice(0, 150) });
         }
     }
 

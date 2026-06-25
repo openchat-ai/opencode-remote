@@ -1,12 +1,36 @@
-node_modules/
-.git/
+# .dockerignore — exclude everything not needed in the image
+node_modules
+npm-debug.log
+.git
 .gitignore
-*.md
-test/
-scripts/
-daily-logs/
-memory/
-.claude/
 .env
-.env.example
-weixin.bat
+.env.local
+
+# Tests and dev artifacts
+test
+*.test.mjs
+*.spec.mjs
+coverage
+.nyc_output
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Docs (optional - keep if you want docs in image)
+# docs
+
+# CI artifacts
+.github
+docs
+
+# Local state (don't bake credentials into image!)
+.opencode-remote
+*.log
+*.bak
+*.tmp
+
+# Build artifacts
+*.tsbuildinfo

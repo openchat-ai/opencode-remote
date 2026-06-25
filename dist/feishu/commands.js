@@ -7,10 +7,10 @@ import { registry } from '../core/registry.js';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
+async function handleCommand(adapter, ctx, platform, command, arg, openCodeSessions) {
     switch (command) {
         case 'start': {
-            const result = claimOwnership('feishu', ctx.userId);
+            const result = claimOwnership(platform, ctx.userId);
             if (result.success) {
                 if (result.message === 'claimed') {
                     await adapter.reply(ctx.threadId, `🔐 **安全设置完成！**

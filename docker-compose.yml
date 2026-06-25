@@ -1,36 +1,43 @@
-version: '3.8'
+# docker-compose.yml — local production setup
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f bot
 
 services:
-  opencode-remote:
+  bot:
     build: .
-    container_name: opencode-remote
+    image: opencode-remote:latest
+    container_name: opencode-remote-bot
     restart: unless-stopped
-    ports:
-      - "9080:9080"
-    environment:
-      - NODE_ENV=production
-      - OPENCODE_CHILD=1
-      # Configure at least one IM platform:
-      # Telegram (easiest, 5 min setup)
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      # Optional: WeChat iLink
-      - WEIXIN_BOT_ID=${WEIXIN_BOT_ID:-}
-      - WEIXIN_TOKEN=${WEIXIN_TOKEN:-}
-      # Optional: Feishu
-      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
-      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
-      # Optional: Qiniu for file upload
-      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
-      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
-      - QINIU_BUCKET=${QINIU_BUCKET:-}
-      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
+    # Run as non-root for security (uncomment after testing)
+    # user: "1000:1000"
     volumes:
-      # Mount project directory for AI to work on
-      - ./project:/app/project
-      # Persist config and sessions
-      - opencode-remote-data:/root/.opencode-remote
-    working_dir: /app/project
-    command: ["start"]
+      # Persistent state (credentials, history, logs)
+      - bot-state:/root/.opencode-remote
+    environment:
+      # Proxy (set your own if needed)
+      # - HTTP_PROXY=http://host.docker.internal:7890
+      # - HTTPS_PROXY=http://host.docker.internal:7890
+      # OpenCode timeout (seconds)
+      - OPENCODE_TIMEOUT=180
+      # Debug logging
+      - DEBUG_RAW=0
+      # Timezone (optional, for log timestamps)
+      - TZ=Asia/Shanghai
+    # Network mode for WeChat iLink (if you need host network access)
+    # network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "test", "-f", "/root/.opencode-remote/parent.pid"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
-  opencode-remote-data:
+  bot-state:
+    name: opencode-remote-state

@@ -4,10 +4,14 @@ import { abortSession, initOpenCode, listProviders, getThreadModel, setThreadMod
 import { claimOwnership, hasOwner } from '../core/auth.js';
 import { registry } from '../core/registry.js';
 import { deleteFromQiniu } from '../core/qiniu.js';
+import { formatInfo, incr, incrKey } from '../core/stats.js';
+import { listAgentProcesses } from '../core/agent-registry.js';
+import { threadHistory } from '../core/state.js';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { DEFAULT_BASE_URL } from './types.js';
+import { threadAgent } from '../core/state.js';
 import { userAdapterMap } from './user-adapter-map.js';
 
 // 共享会话
@@ -27,7 +31,7 @@ export function removeSharedMember(threadId) {
 }
 
 // 线程级活跃 agent 追踪
-export const threadAgent = new Map();
+export { threadAgent };
 
 async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
     const agent = registry.findAgent(agentName);
@@ -65,12 +69,21 @@ async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
         threadAgent.set(ctx.threadId, agentName);
     }
 
-    await adapter.sendTyping?.(ctx.threadId, true);
+    // 兼容旧版 -c 前缀（清理历史中残留的 -c）
+    const cleanPrompt = prompt.replace(/^-c\s+/, '').trim();
+
+    adapter.sendTypingIndicator(ctx.threadId).catch(() => {});
+
+    // 传入 threadHistory 让对话有上下文
+    const history = threadHistory.get(ctx.threadId) || [];
+    const recentHistory = history.slice(-20);
 
     try {
-        const response = await agent.sendPrompt(agentName, prompt, [], { projectDir: globalThis.__autoProjectDir });
+        const response = await agent.sendPrompt(agentName, cleanPrompt, recentHistory, { projectDir: globalThis.__autoProjectDir, threadId: ctx.threadId });
 
-        await adapter.sendTyping?.(ctx.threadId, false);
+        // 更新历史（用清理后的 prompt）
+        history.push({ role: 'user', content: cleanPrompt }, { role: 'assistant', content: response || '' });
+        threadHistory.set(ctx.threadId, history);
 
         const chunks = splitMessage(response || '无响应');
         for (const chunk of chunks) {
@@ -85,11 +98,15 @@ async function handleAgentSwitch(adapter, ctx, agentName, prompt) {
     return true;
 }
 
-async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
+async function handleCommand(adapter, ctx, platform, command, arg, openCodeSessions) {
+    // Count this command invocation
+    incr('messagesSent');
+    incrKey('commandsByType', command);
+
     const session = {};
     switch (command) {
         case 'start': {
-            const result = claimOwnership('weixin', ctx.userId);
+            const result = claimOwnership(platform, ctx.userId);
             if (result.success) {
                 if (result.message === 'claimed') {
                     await adapter.reply(ctx.threadId, `🔐 安全设置完成！你是此 bot 的唯一所有者。\n\n发送消息给 OpenCode 开始工作\n/help 查看指令`);
@@ -107,6 +124,8 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
         case 'restart': {
             console.log('[bot] restart command received');
             await adapter.reply(ctx.threadId, '🔄 正在重启 bot...');
+            // 关掉 opencode server，防新子进程端口冲突
+            try { globalThis.__opencodeServer?.kill?.(); } catch {}
             const fs = await import('fs');
             const remoteDir = join(process.env.HOME || process.cwd(), '.opencode-remote');
             if (!fs.existsSync(remoteDir)) {
@@ -128,6 +147,73 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             }
             openCodeSessions?.delete(ctx.threadId);
             await adapter.reply(ctx.threadId, '🔄 会话已重置，下次发送消息将创建新会话');
+            return true;
+        }
+
+        case 'esc': {
+            const session = openCodeSessions?.get(ctx.threadId);
+            const parts = [];
+            // 1. 杀 CLI 进程 (cc/cx/copilot 模式)
+            const { killAgentProcess, getAgentProcess } = await import('../core/agent-registry.js');
+            const ap = getAgentProcess(ctx.threadId);
+            if (ap) {
+                const r = killAgentProcess(ctx.threadId);
+                parts.push(`🛑 ${r.agentName} 子进程已终止 (pid ${ap.process.pid})`);
+            }
+            // 2. 中断 OpenCode SDK session
+            if (session) {
+                const ok = await abortSession(session);
+                parts.push(ok ? '🛑 OpenCode session 已中断' : '⚠️ OpenCode session 中断失败');
+            }
+            if (parts.length === 0) {
+                await adapter.reply(ctx.threadId, '⚠️ 没有活跃任务');
+                return true;
+            }
+            await adapter.reply(ctx.threadId, parts.join('\n'));
+            return true;
+        }
+
+        case 'status': {
+            const session = openCodeSessions?.get(ctx.threadId);
+            if (!session) {
+                await adapter.reply(ctx.threadId, '⚠️ 当前线程无 session\n发送任意消息创建 session');
+                return true;
+            }
+            try {
+                const r = await session.client.session.status();
+                const all = r.data || {};
+                const s = all[session.sessionId];
+                if (!s) {
+                    await adapter.reply(ctx.threadId, `📊 Session: ${session.sessionId.slice(0, 8)}\n状态: unknown (server 未返回)`);
+                    return true;
+                }
+                const icon = s.type === 'idle' ? '🟢' : s.type === 'busy' ? '🔴' : '🟡';
+                const label = s.type === 'idle' ? '待命' : s.type === 'busy' ? '活跃' : `重试中 (attempt ${s.attempt})`;
+                let msg = `${icon} ${label}\nSession: ${session.sessionId.slice(0, 8)}`;
+                if (s.type === 'retry' && s.next) {
+                    const wait = Math.max(0, Math.round((s.next - Date.now()) / 1000));
+                    msg += `\n下次重试: ${wait}s 后`;
+                }
+                await adapter.reply(ctx.threadId, msg);
+            } catch (e) {
+                await adapter.reply(ctx.threadId, `❌ 状态查询失败: ${e.message}`);
+            }
+            return true;
+        }
+
+        case 'info': {
+            try {
+                const agentChildren = listAgentProcesses().length;
+                const activeThreads = threadHistory.size;
+                const msg = formatInfo({
+                    version: process.env.npm_package_version || 'dev',
+                    activeThreads,
+                    agentChildren,
+                });
+                await adapter.reply(ctx.threadId, msg);
+            } catch (e) {
+                await adapter.reply(ctx.threadId, `❌ /info 失败: ${e.message}`);
+            }
             return true;
         }
 
@@ -335,7 +421,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
 
         case 'share': {
             const val = arg?.trim().toLowerCase();
-            const isOwner = hasOwner('weixin') && claimOwnership('weixin', ctx.userId);
+            const isOwner = hasOwner(platform) && claimOwnership(platform, ctx.userId);
 
             if (!val || val === 'status') {
                 const members = [...sharedRoom.members].join(', ') || '无';
@@ -501,10 +587,31 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return true;
         }
 
+        case 'lab': {
+            const { execSync } = await import('child_process');
+            const { existsSync } = await import('fs');
+            const projectDir = globalThis.__autoProjectDir || process.cwd();
+            if (!existsSync(`${projectDir}/bridge/bin/lab.mjs`)) {
+                await adapter.reply(ctx.threadId, '❌ 此指令仅在 openchat 项目下可用');
+                return true;
+            }
+            const subCmd = ctx.arg || 'status';
+            try {
+                const out = execSync(`node bridge/bin/lab.mjs ${subCmd}`, { cwd: projectDir, encoding: 'utf8', timeout: 15000, maxBuffer: 2048 * 1024 });
+                // 格式化输出
+                const formatted = formatLabOutput(out, subCmd);
+                await adapter.reply(ctx.threadId, `📋 Lab ${subCmd}\n${formatted}`);
+            } catch (e) {
+                const errMsg = e.stderr || e.message || String(e);
+                await adapter.reply(ctx.threadId, `❌ Lab 错误: ${errMsg.slice(0, 500)}`);
+            }
+            return true;
+        }
+
         case 'deploy': {
             const { gitPush } = await import('../core/git-push.js');
             await adapter.reply(ctx.threadId, '📤 正在推送代码...');
-            const result = gitPush({ message: ctx.arg || undefined });
+            const result = gitPush({ message: ctx.arg || undefined, branch: undefined });
             if (result.ok) {
                 await adapter.reply(ctx.threadId, `✅ 推送成功: ${result.successUrl}`);
             } else {
@@ -518,5 +625,7 @@ async function handleCommand(adapter, ctx, command, arg, openCodeSessions) {
             return false;
     }
 }
+
+import { formatLabOutput } from '../core/handler.js';
 
 export { handleAgentSwitch, handleCommand };

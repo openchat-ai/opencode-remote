@@ -2,6 +2,7 @@
 import { registry } from './registry.js';
 import { initOpenCode, checkConnection, setThreadModel, getThreadModel, getRecentModels, setRawDebug, isRawDebug } from '../opencode/client.js';
 import { formatTaskCompletion } from './notifications.js';
+import { existsSync } from 'fs';
 
 export const COMMAND_ALIASES = {
     start: ['start'],
@@ -14,15 +15,18 @@ export const COMMAND_ALIASES = {
     cx: ['cx'],
     copilot: ['copilot'],
     model: ['model'],
-    expert: ['expert', 'z', 'Z', 'review'],
     raw: ['raw'],
     think: ['think'],
     share: ['share'],
-    invite: ['invite'],
+    bind: ['bind'],
     push: ['push'],
     who: ['who'],
     deploy: ['deploy', 'gitpush'],
     auto: ['auto'],
+    lab: ['lab'],
+    esc: ['esc', 'abort', 'stop'],
+    status: ['status'],
+    info: ['info', 'stats', 'health'],
 };
 
 export const EXPERT_SYSTEM_PROMPT = `你是一个专家评审系统。用户消息含触发词（z/c/叫全部专家/专家点评）时启动评审，前后可带具体问题则聚焦该问题。
@@ -120,7 +124,6 @@ const COMMAND_HELP = {
     cx: '使用 Codex',
     copilot: '使用 Copilot',
     model: '切换模型',
-    expert: '专家评审(z/叫全部专家)',
     raw: '开启/关闭 RAW 调试输出',
     think: '开启/关闭思考过程显示',
     share: '共享会话管理',
@@ -129,6 +132,10 @@ const COMMAND_HELP = {
     who: '查看在线用户',
     deploy: '推送代码到所有 Git 镜像',
     auto: '自主开发模式',
+    lab: '实验室（状态/队列/历史等）',
+    esc: '中断当前活跃任务',
+    status: '查看 OpenCode 会话状态',
+    info: 'bot 状态/统计/版本/内存',
 };
 
 const COMMAND_MAP = {};
@@ -157,13 +164,16 @@ export function startTypingPing(adapter, threadId) {
 
 export function getHelpText() {
     const lines = ['📖 指令\n'];
+    const hasLab = existsSync('bridge/bin/lab.mjs');
     const groups = [
         ['start', 'help'],                    // 系统
-        ['reset', 'restart', 'diagnose'],     // 会话
+        ['reset', 'restart', 'diagnose', 'esc', 'status', 'info'],     // 会话
         ['oc', 'cc', 'cx', 'copilot'],        // Agent
         ['model', 'raw', 'think'],            // 配置
         ['share', 'bind', 'push', 'who'],  // 协作
-        ['expert', 'deploy', 'auto'],       // 专家+部署+自主
+        hasLab
+            ? ['deploy', 'auto', 'lab']
+            : ['deploy', 'auto'],   // 专家+部署+自主
     ];
     let first = true;
     for (const group of groups) {
@@ -178,6 +188,7 @@ export function getHelpText() {
         }
     }
     lines.push('');
+    lines.push('🤖 专家评审: 发"z"或"叫全部专家"即可');
     lines.push('💬 直接发消息给 AI!');
     return lines.join('\n');
 }
@@ -188,7 +199,8 @@ export function detectCommand(text) {
         return { name: 'help', arg: '' };
     }
     if (/^[.。\/]/.test(trimmed)) {
-        const cmd = trimmed.slice(1).trim();
+        let cmd = trimmed.slice(1).trim();
+        if (cmd.startsWith('/')) cmd = cmd.slice(1).trim();
         const parts = cmd.split(/\s+/);
         const name = COMMAND_MAP[parts[0].toLowerCase()];
         if (name) {

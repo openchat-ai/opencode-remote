@@ -1,3 +1,4 @@
+// @ts-nocheck — patches internal Module._load which is private API
 import { createRequire } from 'node:module';
 import Module from 'node:module';
 import { platform } from 'os';

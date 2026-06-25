@@ -3,6 +3,7 @@ import { initOpenCode } from '../opencode/client.js';
 import { getAuthStatus } from '../core/auth.js';
 import { createFeishuAdapter } from './adapter.js';
 import { handleMessage } from './handler.js';
+import { LRUSessionMap } from '../core/lru.js';
 
 let feishuClient = null;
 let wsClient = null;
@@ -45,7 +46,8 @@ export async function startFeishuBot(botConfig) {
         appId: config.feishuAppId,
         appSecret: config.feishuAppSecret,
     });
-    openCodeSessions = new Map();
+    openCodeSessions = new LRUSessionMap({ maxSize: 100, ttlMs: 30 * 60 * 1000, name: 'feishu-sessions' });
+    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000);
     console.log('🔧 正在初始化 OpenCode...');
     try {
         await initOpenCode();
@@ -84,7 +86,7 @@ export async function startFeishuBot(botConfig) {
                     return { code: 0 };
                 }
                 const ctx = feishuEventToContext(data);
-                handleMessage(adapter, ctx, text, openCodeSessions).catch(error => {
+                handleMessage(adapter, ctx, text, openCodeSessions, 'feishu').catch(error => {
                     console.error('处理飞书消息失败:', error);
                 });
                 return { code: 0 };

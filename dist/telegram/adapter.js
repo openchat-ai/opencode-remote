@@ -43,7 +43,7 @@ export class TelegramAdapter {
             ['/cx', '/copilot'],
         ];
         const keyboard = [];
-        for (const [, cmds] of groups) {
+        for (const cmds of groups) {
             const row = cmds.map(cmd => ({ text: cmd, callback_data: `cmd:${cmd.slice(1)}` }));
             keyboard.push(row);
         }
@@ -52,14 +52,30 @@ export class TelegramAdapter {
         });
     }
 
+    // BotAdapter 接口方法
+    async reply(threadId, text) { return this.sendMessage(threadId, text); }
+    async sendTypingIndicator(threadId) { return this.sendTyping(threadId, true); }
+    async sendTypingEnd(threadId) { return this.sendTyping(threadId, false); }
+    async updateMessage(threadId, messageId, text) {
+        if (!this.bot || !messageId) return;
+        try { await this.bot.api.editMessageText(threadId, Number(messageId), text); } catch (e) { console.warn('[telegram] updateMessage failed:', e.message); }
+    }
+    async deleteMessage(threadId, messageId) {
+        if (!this.bot || !messageId) return;
+        try { await this.bot.api.deleteMessage(threadId, Number(messageId)); }
+        catch (e) { console.debug('[telegram] deleteMessage failed:', e.message); }
+    }
+
     async sendTyping(threadId, isTyping) {
         if (!this.bot) return;
         if (isTyping) {
-            try { await this.bot.api.sendChatAction(threadId, 'typing'); } catch {}
+            try { await this.bot.api.sendChatAction(threadId, 'typing'); }
+            catch (e) { console.debug('[telegram] sendChatAction failed:', e.message); }
             const existing = this.typingIntervals.get(threadId);
             if (existing) clearInterval(existing);
             const interval = setInterval(async () => {
-                try { await this.bot.api.sendChatAction(threadId, 'typing'); } catch {}
+                try { await this.bot.api.sendChatAction(threadId, 'typing'); }
+                catch (e) { console.debug('[telegram] typing-tick failed:', e.message); }
             }, 4000);
             this.typingIntervals.set(threadId, interval);
         } else {

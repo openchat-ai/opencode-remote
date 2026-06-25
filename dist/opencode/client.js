@@ -14,7 +14,7 @@ const CONFIG_FILE = join(CONFIG_DIR, '.env');
 const threadModels = new Map();
 const recentModels = [];
 let rawDebugEnabled = false;
-let thinkVisibleEnabled = false;
+let thinkVisibleEnabled = true;
 
 export function setRawDebug(enabled) {
     rawDebugEnabled = enabled;
@@ -400,55 +400,58 @@ export async function createSession(_threadId, title = `Remote control session`)
 }
 // Send message - use promptAsync then poll for response
 export async function sendMessage(session, message, callbacks, threadId) {
-    const TIMEOUT_MS = 5 * 60 * 1000;
+    const TIMEOUT_MS = parseInt(process.env.OPENCODE_TIMEOUT || '180', 10) * 1000;
+
+    // Verify session is valid first
+    try {
+        const sessionCheck = await session.client.session.get({ sessionID: session.sessionId });
+        if (sessionCheck.error) {
+            console.error('[sendMessage] Session error:', sessionCheck.error);
+            throw new Error(`session invalid: ${sessionCheck.error}`);
+        }
+    } catch (e) {
+        console.error('[sendMessage] Session check failed:', e.message);
+        throw new Error(`session check failed: ${e.message}`);
+    }
+
+    // Build prompt body
+    const promptBody = {
+        parts: [{ type: 'text', text: message }]
+    };
+    // Inject local model preference if set
+    if (threadId && threadModels.has(threadId)) {
+        session.model = threadModels.get(threadId);
+        pushRecent(session.model);
+    }
+    // Per-message model override if set on session
+    if (session.model?.providerID && session.model?.modelID) {
+        promptBody.model = {
+            providerID: session.model.providerID,
+            modelID: session.model.modelID,
+        };
+    }
+
+    // Stream the response via session.prompt (POST /session/{sessionID}/message)
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), TIMEOUT_MS);
 
     try {
-        // Verify session is valid first
-        try {
-            const sessionCheck = await session.client.session.get({ sessionID: session.sessionId });
-            if (sessionCheck.error) {
-                console.error('[sendMessage] Session error:', sessionCheck.error);
-                return '❌ 会话无效，请发送 /restart 重启';
+        const response = await session.client.session.prompt({
+            sessionID: session.sessionId,
+            parts: promptBody.parts,
+            ...(promptBody.model ? { model: promptBody.model } : {}),
+        }, {
+            parseAs: 'stream',
+            signal: abortController.signal,
+        });
+
+        if (response.error) {
+            if (/abort/i.test(response.error)) {
+                console.warn('[sendMessage] SDK returned AbortError');
+                throw new Error(response.error || 'AbortError');
             }
-        } catch (e) {
-            console.error('[sendMessage] Session check failed:', e.message);
-            return '❌ 会话连接失败，请发送 /restart 重启';
+            throw new Error(response.error);
         }
-
-        // Build prompt body
-        const promptBody = {
-            parts: [{ type: 'text', text: message }]
-        };
-        // Inject local model preference if set
-        if (threadId && threadModels.has(threadId)) {
-            session.model = threadModels.get(threadId);
-            pushRecent(session.model);
-        }
-        // Per-message model override if set on session
-        if (session.model?.providerID && session.model?.modelID) {
-            promptBody.model = {
-                providerID: session.model.providerID,
-                modelID: session.model.modelID,
-            };
-        }
-
-        // Stream the response via session.prompt (POST /session/{sessionID}/message)
-        const abortController = new AbortController();
-        const timeoutId = setTimeout(() => abortController.abort(), TIMEOUT_MS);
-
-        try {
-            const response = await session.client.session.prompt({
-                sessionID: session.sessionId,
-                parts: promptBody.parts,
-                ...(promptBody.model ? { model: promptBody.model } : {}),
-            }, {
-                parseAs: 'stream',
-                signal: abortController.signal,
-            });
-
-            if (response.error) {
-                return `❌ 发送失败: ${response.error}`;
-            }
 
             const stream = response.data;
             if (!stream) {
@@ -472,6 +475,11 @@ export async function sendMessage(session, message, callbacks, threadId) {
             if (isRawDebug()) console.log('[RAW]', rawJson);
             try {
                 const parsed = JSON.parse(rawJson);
+                // 顶层 error → 透传真实错误
+                if (parsed.error) {
+                    const errMsg = typeof parsed.error === 'string' ? parsed.error : (parsed.error.message || JSON.stringify(parsed.error));
+                    throw new Error(errMsg);
+                }
                 const t = parsed.info?.tokens || {};
                 const time = parsed.info?.time || {};
                 const elapsed = time.completed && time.created ? `${(time.completed - time.created) / 1000}s` : '?';
@@ -498,13 +506,23 @@ export async function sendMessage(session, message, callbacks, threadId) {
                         }
                     }
                 }
+                // info.error 字段 → 透传
+                if (!responseText && parsed.info?.error) {
+                    throw new Error(parsed.info.error);
+                }
+                // 非正常结束 → 透传 finish 原因
+                if (!responseText && parsed.info?.finish && parsed.info.finish !== 'stop') {
+                    throw new Error(`finish=${parsed.info.finish}`);
+                }
                 if (!responseText && parsed.info?.finish) {
-                    responseText = '[empty response]';
+                    throw new Error(`Empty response (finish=${parsed.info.finish}, tokens=${t.total || 0})`);
                 }
             } catch (e) {
+                if (e.message && !e.message.startsWith('Unexpected')) throw e;
                 console.error('[sendMessage] Failed to parse response:', e.message);
                 console.log('[RAW]', rawJson.slice(0, 1000));
-                responseText = rawJson;
+                if (rawJson.trim()) responseText = rawJson;
+                else throw new Error('Empty response (no stream data)');
             }
 
             callbacks?.onStatusChange?.({ type: 'idle' });
@@ -513,14 +531,6 @@ export async function sendMessage(session, message, callbacks, threadId) {
         } finally {
             clearTimeout(timeoutId);
         }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            console.warn('[sendMessage] 5min timeout, aborting stream');
-            return '⏰ 请求超时，请重试';
-        }
-        console.error('[sendMessage] Error:', error);
-        return `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    }
 }
 export async function getSession(session) {
     try {
@@ -620,8 +630,8 @@ export async function listOpenCodeSessions() {
             id: s.id,
             title: s.title || 'Untitled',
             directory: s.directory || '',
-            createdAt: s.created_at || s.time?.created || 0,
-            lastActivity: s.updated_at || s.time?.updated || 0,
+            createdAt: s.time?.created || 0,
+            lastActivity: s.time?.updated || 0,
         }));
     }
     catch (error) {
@@ -644,8 +654,8 @@ export async function listOpenCodeSessionsFromServer(baseUrl) {
             id: s.id,
             title: s.title || 'Untitled',
             directory: s.directory || '',
-            createdAt: s.created_at || s.time?.created || 0,
-            lastActivity: s.updated_at || s.time?.updated || 0,
+            createdAt: s.time?.created || 0,
+            lastActivity: s.time?.updated || 0,
         }));
     }
     catch (error) {

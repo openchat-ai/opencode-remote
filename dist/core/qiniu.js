@@ -238,10 +238,10 @@ export function findBuildOutputs(projectDir, maxDepth = 5) {
                             time: stat.mtime.getTime(),
                             relativePath: fullPath.replace(projectDir, '').replace(/^[\\\/]/, '')
                         });
-                    } catch (e) {}
+                    } catch (e) { console.debug('[qiniu] stat error:', e.message); }
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.debug('[qiniu] scan error:', e.message); }
     }
 
     for (const pattern of searchDirPatterns) {

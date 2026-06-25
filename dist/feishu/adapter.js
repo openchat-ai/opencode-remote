@@ -69,4 +69,3 @@ function createFeishuAdapter(client) {
 }
 
 export { createFeishuAdapter };
-export default createFeishuAdapter;

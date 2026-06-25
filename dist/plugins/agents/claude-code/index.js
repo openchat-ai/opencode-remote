@@ -1,6 +1,10 @@
-// Claude Code CLI agent adapter
+// Claude Code CLI agent adapter — --print + explicit context prompt
+// @ts-nocheck — spawn options type differs between @types/node versions
 import { spawn } from 'child_process';
 import { platform } from 'os';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { registerAgentProcess, unregisterAgentProcess } from '../../../core/agent-registry.js';
 
 const LIUV_CRASH_PATTERNS = [
     'Assertion failed',
@@ -23,22 +27,13 @@ export class ClaudeCodeAgentAdapter {
     }
 
     async sendPrompt(_sessionId, prompt, history, options = {}) {
-        const projectDir = options.projectDir;
-        let cleanPrompt = prompt;
-        if (prompt.startsWith('-c')) {
-            cleanPrompt = prompt.slice(2).trim();
-        }
-        const contextualPrompt = this.buildContextualPrompt(cleanPrompt, history);
-
-        const args = ['--print', '-c', contextualPrompt];
-
-        return this.callClaude(args, projectDir);
-    }
-
-    buildContextualPrompt(prompt, history) {
-        if (!history || history.length === 0) return prompt;
-        const historyText = history.map(msg => `[${msg.role}]: ${msg.content}`).join('\n\n');
-        return `Previous:\n${historyText}\n\n${prompt}`;
+        const threadId = options.threadId;
+        const contextualPrompt = buildContextualPrompt(prompt, history);
+        // 跑在临时目录，避免 claude 扫描项目源码崩在 misc-lib.mjs
+        const safeCwd = join(tmpdir(), 'opencode-remote-claude');
+        const { mkdirSync, existsSync } = await import('fs');
+        if (!existsSync(safeCwd)) mkdirSync(safeCwd, { recursive: true });
+        return this.callClaude(['--print', contextualPrompt], safeCwd, threadId);
     }
 
     isCrashNoise(line) {
@@ -46,70 +41,68 @@ export class ClaudeCodeAgentAdapter {
     }
 
     extractErrorMessage(stdout, stderr, code) {
-        // 先检查 stdout：--print 模式把错误也输出到 stdout
         const stdoutLines = stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
         const stdoutErrors = stdoutLines.filter(l => !this.isCrashNoise(l));
-        if (stdoutErrors.length > 0) {
-            return stdoutErrors.join('\n');
-        }
-
-        // 再检查 stderr
+        if (stdoutErrors.length > 0) return stdoutErrors.join('\n');
         const stderrLines = stderr.trim().split('\n').map(l => l.trim()).filter(Boolean);
         const stderrReal = stderrLines.filter(l => !this.isCrashNoise(l));
-        if (stderrReal.length > 0) {
-            return stderrReal.join('\n');
-        }
-
-        // 如果全是崩溃噪音，尝试从任一流中找 Error 关键词
+        if (stderrReal.length > 0) return stderrReal.join('\n');
         const all = [...stdoutLines, ...stderrLines];
         const firstRelevant = all.find(l => /Error|error|ERROR|^\d{3}/.test(l));
         if (firstRelevant) return firstRelevant;
-
-        // 兜底
         return `进程异常退出 (code: ${code})`;
     }
 
-    callClaude(args, projectDir) {
+    callClaude(args, safeCwd, threadId) {
         return new Promise((resolve) => {
             const opts = {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
+                cwd: safeCwd,
             };
-            if (projectDir) {
-                opts.cwd = projectDir;
-            }
-
-            console.log(`[claude-code] Spawning: claude ${args.join(' ')} in ${opts.cwd || process.cwd()}`);
+            console.log(`[claude-code] ${args.join(' ')}`);
             const proc = spawn('claude', args, opts);
+            if (threadId) registerAgentProcess(threadId, proc, 'claude-code');
             let stdout = '';
             let stderr = '';
+            let killed = false;
             proc.stdout?.on('data', (data) => { stdout += data.toString(); });
             proc.stderr?.on('data', (data) => { stderr += data.toString(); });
 
+            const TIMEOUT_MS = parseInt(process.env.OPENCODE_TIMEOUT || '600', 10) * 1000;
             const timeout = setTimeout(() => {
-                console.log(`[claude-code] Process still running after 30s, stderr so far: ${stderr.slice(-200)}`);
-            }, 30000);
+                killed = true;
+                console.warn(`[claude-code] Timeout ${TIMEOUT_MS / 1000}s`);
+                try { proc.kill('SIGKILL'); } catch {}
+                resolve(`⏰ Claude Code 超时 (${TIMEOUT_MS / 1000}s)`);
+            }, TIMEOUT_MS);
 
             proc.on('close', (code) => {
                 clearTimeout(timeout);
-                console.log(`[claude-code] Process exited with code ${code}, stdout=${stdout.length} bytes, stderr=${stderr.length} bytes`);
-
-                if (code === 0) {
-                    resolve(stdout.trim());
-                    return;
-                }
-
+                if (threadId) unregisterAgentProcess(threadId);
+                if (killed) return;
+                console.log(`[claude-code] exit ${code}, ${stdout.length} bytes`);
+                if (code === 0) { resolve(stdout.trim()); return; }
                 const errorMsg = this.extractErrorMessage(stdout, stderr, code);
-                console.log(`[claude-code] Process failed, raw stderr:\n${stderr.trim().slice(-1000)}`);
-                console.log(`[claude-code] Error detail:\n${errorMsg}`);
-
-                resolve(`❌ Claude Code 错误 (exit code ${code}): ${errorMsg}`);
+                resolve(`❌ Claude Code 错误 (exit ${code}): ${errorMsg}`);
             });
             proc.on('error', (err) => {
                 clearTimeout(timeout);
-                console.log(`[claude-code] Spawn error: ${err.message}`);
+                if (threadId) unregisterAgentProcess(threadId);
                 resolve(`❌ Claude Code 启动失败: ${err.message}`);
             });
         });
     }
 }
+
+function buildContextualPrompt(prompt, history) {
+    if (!history || history.length === 0) return prompt;
+    const lines = history.slice(-10).map(m => {
+        const label = m.role === 'user' ? 'User' : 'Assistant';
+        return `${label}: ${m.content}`;
+    }).join('\n');
+    return `Continue the conversation as the assistant. Respond naturally in the same language as the user.\n\n${lines}\nUser: ${prompt}\nAssistant:`;
+}
+
+// Exported for tests
+export { buildContextualPrompt };

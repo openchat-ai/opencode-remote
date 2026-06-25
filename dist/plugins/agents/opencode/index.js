@@ -1,6 +1,8 @@
 // OpenCode CLI agent adapter
+// @ts-nocheck — spawn options type differs between @types/node versions
 import { spawn } from 'child_process';
 import { platform } from 'os';
+import { registerAgentProcess, unregisterAgentProcess } from '../../../core/agent-registry.js';
 
 const CRASH_PATTERNS = [
     'Assertion failed',
@@ -23,20 +25,18 @@ export class OpenCodeAgentAdapter {
     }
     
     async sendPrompt(_sessionId, prompt, history, options = {}) {
-        let cleanPrompt = prompt;
-        if (prompt.startsWith('-c')) {
-            cleanPrompt = prompt.slice(2).trim();
-        }
-        const contextualPrompt = this.buildContextualPrompt(cleanPrompt, history);
-        return this.callOpenCode(contextualPrompt);
+        const threadId = options.threadId;
+        const contextualPrompt = this.buildContextualPrompt(prompt, history);
+        return this.callOpenCode(contextualPrompt, threadId);
     }
 
     buildContextualPrompt(prompt, history) {
         if (!history || history.length === 0) return prompt;
-        const historyText = history
-            .map(msg => `[${msg.role === 'user' ? 'User' : 'Assistant'}]: ${msg.content}`)
-            .join('\n\n');
-        return `Previous conversation:\n${historyText}\n\nCurrent request: ${prompt}`;
+        const lines = history.slice(-10).map(msg => {
+            const label = msg.role === 'user' ? 'User' : 'AI';
+            return `${label}: ${msg.content}`;
+        }).join('\n');
+        return `Continue the conversation as the AI assistant.\n\n${lines}\nUser: ${prompt}\nAI:`;
     }
 
     extractErrorMessage(stdout, stderr) {
@@ -50,17 +50,27 @@ export class OpenCodeAgentAdapter {
         return first || null;
     }
 
-    callOpenCode(prompt) {
+    callOpenCode(prompt, threadId) {
         return new Promise((resolve) => {
-            const proc = spawn('opencode', ['run', '--format', 'json', '-c', prompt], {
+            const proc = spawn('opencode', ['run', '--format', 'json', prompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             });
+            if (threadId) registerAgentProcess(threadId, proc, 'opencode');
 
             let stdout = '';
             let stderr = '';
             let fullText = '';
             let resigned = false;
+            let killed = false;
+
+            const TIMEOUT_MS = parseInt(process.env.OPENCODE_TIMEOUT || '600', 10) * 1000;
+            const timeout = setTimeout(() => {
+                killed = true;
+                console.warn(`[opencode-agent] Timeout after ${TIMEOUT_MS / 1000}s, killing process`);
+                try { proc.kill('SIGKILL'); } catch {}
+                resolve(`⏰ OpenCode 超时 (${TIMEOUT_MS / 1000}s)，任务已终止`);
+            }, TIMEOUT_MS);
 
             const STUCK_PATTERNS = [
                 'Free usage exceeded', 'quota exceeded', 'rate limit',
@@ -92,7 +102,7 @@ export class OpenCodeAgentAdapter {
                     try {
                         const event = JSON.parse(line);
                         if (event.text) fullText += event.text;
-                    } catch {}
+                    } catch (e) { console.debug('[opencode-agent] stdout parse:', e.message); }
                 }
             });
 
@@ -102,7 +112,9 @@ export class OpenCodeAgentAdapter {
             });
 
             proc.on('close', (code) => {
-                if (resigned) return;
+                clearTimeout(timeout);
+                if (threadId) unregisterAgentProcess(threadId);
+                if (resigned || killed) return;
                 if (code !== 0) {
                     const detail = this.extractErrorMessage(stdout, stderr);
                     const hint = detail

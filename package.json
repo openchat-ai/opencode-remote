@@ -16,8 +16,10 @@
     "start": "node dist/index.js",
     "lint": "node scripts/check-syntax.mjs",
     "test": "npm run lint && node --test test/*.test.mjs",
-    "precommit": "npm run lint",
-    "prepublishOnly": "npm run lint"
+    "typecheck": "tsc --noEmit",
+    "precommit": "npm run lint && npm run typecheck",
+    "prepublishOnly": "npm run lint",
+    "check-refs": "node scripts/check-ref-errors.mjs"
   },
   "files": [
     "dist"

@@ -1,6 +1,8 @@
 // OpenAI Codex CLI agent adapter
+// @ts-nocheck — spawn options type differs between @types/node versions
 import { spawn } from 'child_process';
 import { platform } from 'os';
+import { registerAgentProcess, unregisterAgentProcess } from '../../../core/agent-registry.js';
 
 const CRASH_PATTERNS = [
     'Assertion failed',
@@ -22,15 +24,18 @@ export class CodexAgentAdapter {
         });
     }
     
-    async sendPrompt(_sessionId, prompt, history) {
+    async sendPrompt(_sessionId, prompt, history, options = {}) {
         const contextualPrompt = this.buildContextualPrompt(prompt, history);
-        return this.callCodex(contextualPrompt);
+        return this.callCodex(contextualPrompt, options.threadId);
     }
     
     buildContextualPrompt(prompt, history) {
         if (!history || history.length === 0) return prompt;
-        const historyText = history.map(msg => `[${msg.role}]: ${msg.content}`).join('\n\n');
-        return `Context:\n${historyText}\n\n${prompt}`;
+        const lines = history.slice(-10).map(msg => {
+            const label = msg.role === 'user' ? 'User' : 'AI';
+            return `${label}: ${msg.content}`;
+        }).join('\n');
+        return `Continue the conversation as the AI assistant.\n\n${lines}\nUser: ${prompt}\nAI:`;
     }
 
     extractErrorMessage(stdout, stderr) {
@@ -43,17 +48,29 @@ export class CodexAgentAdapter {
         return first || null;
     }
     
-    callCodex(prompt) {
+    callCodex(prompt, threadId) {
         return new Promise((resolve) => {
             const proc = spawn('codex', ['--prompt', prompt], {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: true,
             });
+            if (threadId) registerAgentProcess(threadId, proc, 'codex');
             let stdout = '';
             let stderr = '';
+            let killed = false;
             proc.stdout?.on('data', (data) => { stdout += data.toString(); });
             proc.stderr?.on('data', (data) => { stderr += data.toString(); });
+            const TIMEOUT_MS = parseInt(process.env.OPENCODE_TIMEOUT || '600', 10) * 1000;
+            const timeout = setTimeout(() => {
+                killed = true;
+                console.warn(`[codex] Timeout after ${TIMEOUT_MS / 1000}s, killing process`);
+                try { proc.kill('SIGKILL'); } catch {}
+                resolve(`⏰ Codex 超时 (${TIMEOUT_MS / 1000}s)，任务已终止`);
+            }, TIMEOUT_MS);
             proc.on('close', (code) => {
+                clearTimeout(timeout);
+                if (threadId) unregisterAgentProcess(threadId);
+                if (killed) return;
                 if (code === 0) {
                     resolve(stdout.trim());
                 } else {

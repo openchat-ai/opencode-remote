@@ -9,7 +9,21 @@ import { DEFAULT_BASE_URL } from './types.js';
 import { createWeixinAdapter } from './adapter.js';
 import { handleMessage } from './handler.js';
 import { userAdapterMap } from './user-adapter-map.js';
+import { initState } from '../core/state.js';
+import { initLogger, cleanOldLogs, logger } from '../core/log.js';
+import { LRUSessionMap } from '../core/lru.js';
+import { encryptCredential, decryptCredential } from '../core/crypto.js';
 export { COMMAND_ALIASES, detectCommand } from '../core/router.js';
+
+let _initialized = false;
+function initBot() {
+    if (_initialized) return;
+    _initialized = true;
+    initLogger();
+    cleanOldLogs();
+    initState();
+    logger.info('Bot starting', { ts: new Date().toISOString() });
+}
 
 const CONFIG_DIR = join(homedir(), '.opencode-remote');
 const WEIXIN_DIR = join(CONFIG_DIR, 'weixin');
@@ -18,7 +32,6 @@ const INSTANCE_ID = process.env.OPENCODE_INSTANCE_ID || 'default';
 const CREDENTIALS_FILE = INSTANCE_ID === 'default'
     ? join(WEIXIN_DIR, 'credentials.json')
     : join(WEIXIN_DIR, `credentials-${INSTANCE_ID}.json`);
-const RESTART_NOTIFY_FILE = join(WEIXIN_DIR, 'restart-notify.json');
 
 const botInstances = [];
 
@@ -62,7 +75,16 @@ export function loadAllCredentials() {
         const files = readdirSync(CREDENTIALS_DIR).filter(f => f.endsWith('.json'));
         if (files.length > 0) {
             return files.map(f => {
-                try { return JSON.parse(readFileSync(join(CREDENTIALS_DIR, f), 'utf-8')); }
+                try {
+                    const raw = readFileSync(join(CREDENTIALS_DIR, f), 'utf-8');
+                    const obj = JSON.parse(raw);
+                    // 检测是否加密信封 → 解密
+                    if (obj && obj.v === 1 && obj.enc) {
+                        const decrypted = decryptCredential(obj.enc);
+                        if (decrypted) return JSON.parse(decrypted);
+                    }
+                    return obj;
+                }
                 catch (e) { console.debug('[credentials] Failed to parse:', f, e.message); return null; }
             }).filter(Boolean);
         }
@@ -81,7 +103,10 @@ export function loadWeixinCredentials() {
 export function saveWeixinCredentials(creds) {
     ensureDirs();
     const filePath = join(CREDENTIALS_DIR, `credentials-${creds.accountId}.json`);
-    writeFileSync(filePath, JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2), 'utf-8');
+    const plain = JSON.stringify({ ...creds, savedAt: new Date().toISOString() }, null, 2);
+    const enc = encryptCredential(plain);
+    const envelope = { v: 1, enc, savedAt: new Date().toISOString() };
+    writeFileSync(filePath, JSON.stringify(envelope, null, 2), 'utf-8');
     try { const s = statSync(filePath); chmodSync(filePath, (s.mode & 0o777) | 0o600); } catch (e) { console.warn('[credentials] chmod failed:', e.message); }
 }
 
@@ -108,9 +133,9 @@ async function runPollingLoop(adapter, baseUrl, token, openCodeSessions, signal)
                 if (!fromUserId || !text) continue;
                 userAdapterMap.set(fromUserId, adapter);
                 const messageId = msg.message_id?.toString();
-                if (adapter.isDuplicate(messageId)) continue;
-                if (msg.context_token) adapter.contextTokens.set(fromUserId, msg.context_token);
-                handleMessage(adapter, { platform: 'weixin', threadId: fromUserId, userId: fromUserId, messageId }, text, openCodeSessions).catch(e => console.error('Handle error:', e));
+                if (adapter.isDuplicate(messageId, `${fromUserId}:${text}`)) continue;
+                if (msg.context_token) adapter.contextTokens.set(fromUserId, { value: msg.context_token, _ts: Date.now() });
+                try { await handleMessage(adapter, { platform: 'weixin', threadId: fromUserId, userId: fromUserId, messageId }, text, openCodeSessions); } catch (e) { console.error('Handle error:', e); }
             }
         } catch (e) {
             if (signal.aborted) break;
@@ -142,6 +167,9 @@ export function addBotInstance(creds, openCodeSessions) {
 }
 
 export async function startWeixinBot(botConfig, restartFn) {
+    // 仅在子进程启动时初始化日志和状态 (不在父进程 import 时)
+    initBot();
+    process.on('unhandledRejection', (reason) => { console.error('[bot] Unhandled Rejection:', reason); });
     if (restartFn) _restartCallback = restartFn;
     console.log('');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -160,25 +188,32 @@ export async function startWeixinBot(botConfig, restartFn) {
     }
     const firstCreds = credentialsList[0];
     console.log(`Using account: ${firstCreds.accountId}${credentialsList.length > 1 ? ` (+${credentialsList.length - 1} more)` : ''}`);
-    const openCodeSessions = new Map();
+    const openCodeSessions = new LRUSessionMap({ maxSize: 100, ttlMs: 30 * 60 * 1000, name: 'opencode-sessions' });
+    // 定期清理过期 session (每 5 分钟)
+    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000);
 
-    try { await initOpenCode(); console.log('OpenCode ready'); } catch (e) { console.error('Failed to init OpenCode:', e); }
-
+    let opencodeServer = null;
     try {
         const opencode = await initOpenCode();
         if (opencode) {
+            opencodeServer = opencode.server;
+            globalThis.__opencodeServer = opencode.server;
+            console.log('OpenCode ready');
             const result = await opencode.client.session.list();
             if (!result.error && result.data && result.data.length > 0) {
                 const sorted = result.data.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
                 const latest = sorted[0];
                 console.log(`Latest OpenCode session: ${latest.title || 'Untitled'} (${latest.id.slice(0, 8)}...)`);
                 if (latest.directory) {
-                    console.log(`Project directory: ${latest.directory}`);
-                    globalThis.__autoProjectDir = latest.directory;
+                    // resume 的目录可能指向 bot 自身而非 openchat 项目
+                    // 如果 resume 目录没 lab.mjs，尝试 fallback 到 openchat 项目
+                    const projectDir = existsSync(`${latest.directory}/bridge/bin/lab.mjs`) ? latest.directory : (existsSync('F:\\openchat\\bridge\\bin\\lab.mjs') ? 'F:\\openchat' : latest.directory);
+                    console.log(`Project directory: ${projectDir}`);
+                    globalThis.__autoProjectDir = projectDir;
                 }
             }
         }
-    } catch (e) { console.warn('⚠️ Auto-resume failed:', e.message); }
+    } catch (e) { console.error('Failed to init OpenCode:', e); }
 
     if (!getAuthStatus().weixin) {
         console.log('\n🔒 Bot not secured! First user to send /start becomes owner.\n');
@@ -189,16 +224,9 @@ export async function startWeixinBot(botConfig, restartFn) {
         addBotInstance(creds, openCodeSessions);
     }
 
-    const firstAdapter = botInstances[0]?.adapter;
-    try {
-        if (existsSync(RESTART_NOTIFY_FILE)) {
-            const data = JSON.parse(readFileSync(RESTART_NOTIFY_FILE, 'utf8'));
-            if (data.threadId && Date.now() - data.time < 60000 && firstAdapter) {
-                await firstAdapter.reply(data.threadId, '✅ Bot 重启完成！');
-            }
-            unlinkSync(RESTART_NOTIFY_FILE);
-        }
-    } catch (e) { console.warn('[restart-notify] Failed to read restart file:', e.message); }
+    // IPC 心跳：每 30s 通知父进程还活着
+    const hbTimer = setInterval(() => { try { process.send?.({ type: 'heartbeat', ts: Date.now() }); } catch {} }, 30_000);
+    if (hbTimer.unref) hbTimer.unref();
 
     let shouldRestart = false;
     const shutdown = (restart = false) => {
@@ -207,7 +235,8 @@ export async function startWeixinBot(botConfig, restartFn) {
         for (const instance of botInstances) {
             try { instance.abortController.abort(); } catch (e) { }
         }
-        for (const [, s] of openCodeSessions.entries()) { try { s.server?.shutdown?.(); } catch (e) { console.warn('[shutdown] Server shutdown error:', e.message); } }
+        // 关掉 opencode server 进程，防重启后端口冲突
+        try { globalThis.__opencodeServer?.kill?.(); } catch (e) { console.warn('[shutdown] Server kill error:', e.message); }
         openCodeSessions.clear();
     };
 
@@ -216,6 +245,7 @@ export async function startWeixinBot(botConfig, restartFn) {
 
     if (process.env.OPENCODE_RESTART === '1') {
         try {
+            const firstAdapter = botInstances[0]?.adapter;
             const restartInfoPath = join(process.env.HOME || process.cwd(), '.opencode-remote', '.restart_user.json');
             if (existsSync(restartInfoPath)) {
                 const restartInfo = JSON.parse(readFileSync(restartInfoPath, 'utf8'));
@@ -231,12 +261,17 @@ export async function startWeixinBot(botConfig, restartFn) {
     }
 
     console.log(`✅ ${botInstances.length} bot instance(s) running`);
+    console.log('📡 Listening for WeChat messages...');
 
     await new Promise(resolve => {
         globalThis.__weixinBotShutdownAndExit = (restart) => {
             shutdown(restart);
             resolve();
         };
+        // 收到信号时清理 opencode server 后再退出
+        const handleSignal = () => { shutdown(false); resolve(); };
+        process.on('SIGINT', handleSignal);
+        process.on('SIGTERM', handleSignal);
     });
 
     if (shouldRestart) {

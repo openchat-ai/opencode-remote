@@ -156,6 +156,59 @@ A: 需要一台电脑运行 bot，手机上通过 IM 控制。OpenCode 也运行
 **Q: 如何更新？**
 A: `npm update -g @yvhitxcel/opencode-remote`
 
+## 全局命令
+
+安装后使用 `opencode-remote` 命令（不是 `remote-control`）。
+
+### 命令原理
+
+`package.json` 的 `bin` 字段声明了全局命令：
+
+```json
+"bin": {
+    "opencode-remote": "bin/opencode-remote.js",
+    "opencode-weixin": "bin/opencode-weixin.js"
+}
+```
+
+`npm install -g` 时，npm 在全局目录（Windows: `%APPDATA%\npm\`）创建三个包装脚本：
+
+| 文件 | 作用 |
+|------|------|
+| `opencode-remote.cmd` | CMD 入口 |
+| `opencode-remote.ps1` | PowerShell 入口 |
+| `opencode-remote` | Unix Shell 入口 |
+
+包装脚本调用 `node <pkg>/dist/cli.js <args>`。`cli.js` 内置了自动重启机制：
+- 首次启动以父进程模式运行，`spawn` 子进程执行实际逻辑
+- 子进程退出码 `200` 时父进程自动重启
+
+### 多 Bot 实例
+
+```bash
+opencode-remote weixin                   # 启动微信
+opencode-remote weixin --id bot1         # 多账号：第一个
+opencode-remote weixin --id bot2         # 多账号：第二个
+opencode-remote telegram                 # 启动 Telegram
+opencode-remote feishu                   # 启动飞书
+opencode-remote                          # 启动所有已配置的 Bot
+```
+
+### 别名
+
+如果习惯 `remote-control` 这个命令名，创建别名文件：
+
+**PowerShell** (`$PROFILE`):
+```powershell
+Set-Alias -Name remote-control -Value opencode-remote
+```
+
+**CMD** (`remote-control.cmd`):
+```bat
+@echo off
+opencode-remote %*
+```
+
 ## 系统要求
 
 - Node.js >= 18.0.0
@@ -164,6 +217,22 @@ A: `npm update -g @yvhitxcel/opencode-remote`
 
 本项目基于 [opencode-remote-control](https://github.com/ceociocto/opencode-remote-control) 开发。
 
+## 文档
+
+- [架构总览](docs/ARCHITECTURE.md) — 进程模型、模块图、消息流、错误传播理念
+- [故障排查](docs/TROUBLESHOOTING.md) — 常见问题诊断与解决
+- [配置说明](docs/CONFIG.md) — 环境变量、路径、超时矩阵
+- [错误处理规范](docs/ERROR_HANDLING.md) — 错误处理契约，新代码必须遵循
+- [快速开始](QUICKSTART.md) — 入门指南
+
+## 质量保障
+
+- ✅ TypeScript 类型检查 (`npm run typecheck`)
+- ✅ 32 项自动化测试 (`npm test`)
+- ✅ 多平台 CI（GitHub Actions: Ubuntu + Windows × Node 20/22）
+- ✅ 容器化部署 (`docker compose up`)
+- ✅ MIT 许可证
+
 ## 许可证
 
-MIT License
+MIT License — 详见 [LICENSE](LICENSE) 文件
