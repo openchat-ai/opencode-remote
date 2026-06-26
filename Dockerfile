@@ -23,12 +23,9 @@ COPY tsconfig.json ./
 # State and logs directories (persistent volume)
 RUN mkdir -p /root/.opencode-remote/state /root/.opencode-remote/logs
 
-# Health check: ensure the bot responds within 30s
-# The bot doesn't expose an HTTP endpoint natively, but the parent process
-# writes parent.pid when alive. We check that.
+# Health check: HTTP endpoint returns 200 when child is alive with recent heartbeat
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD test -f /root/.opencode-remote/parent.pid && \
-      ps -p $(cat /root/.opencode-remote/parent.pid) > /dev/null || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:9090/health || exit 1
 
 ENV NODE_ENV=production \
     OPENCODE_TIMEOUT=180

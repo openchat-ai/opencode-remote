@@ -47,7 +47,7 @@ export async function startFeishuBot(botConfig) {
         appSecret: config.feishuAppSecret,
     });
     openCodeSessions = new LRUSessionMap({ maxSize: 100, ttlMs: 30 * 60 * 1000, name: 'feishu-sessions' });
-    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000);
+    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000).unref();
     console.log('🔧 正在初始化 OpenCode...');
     try {
         await initOpenCode();

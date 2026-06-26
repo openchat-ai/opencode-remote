@@ -3,7 +3,7 @@
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { splitMessage } from './notifications.js';
-import { createSession, sendMessage as sendToOpenCode, checkConnection, shareSession, listOpenCodeSessions, resumeSession, initOpenCode } from '../opencode/client.js';
+import { createSession, sendMessage as sendToOpenCode, checkConnection, shareSession, listOpenCodeSessions, resumeSession, initOpenCode, resetOpenCode } from '../opencode/client.js';
 import { isAuthorized, hasOwner } from './auth.js';
 import { threadHistory, threadAgent } from './state.js';
 import { retryTransient, isTransientError } from './retry.js';
@@ -150,6 +150,7 @@ export function createHandler(deps) {
             // 客户端超时 / AbortError → 自动重启 OpenCode 服务（防卡死）
             if (/AbortError|aborted/i.test(e.message)) {
                 incr('opencodeRestarts');
+                resetOpenCode();  // 清空缓存 singleton，initOpenCode 才能真正重启
                 try { globalThis.__opencodeServer?.kill?.('SIGKILL'); } catch {}
                 setTimeout(() => initOpenCode().catch(() => {}), 1000);
             }

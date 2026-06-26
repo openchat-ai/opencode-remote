@@ -6,6 +6,7 @@ import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn, execSync } from 'child_process';
+import { createServer } from 'http';
 import { setGlobalProxy } from './opencode/client.js';
 import { printBanner, VERSION, runConfig, runConfigTimeout } from './core/setup.js';
 import { runStart, runTelegramOnly, runFeishuOnly, runWeixinOnly, runAgentsCommand } from './bot-runner.js';
@@ -93,6 +94,36 @@ if (process.env.OPENCODE_CHILD !== '1') {
     } catch (e) { console.debug('[pid] Failed to read PID file:', e.message); }
     try { writeFileSync(PID_FILE, String(process.pid), 'utf8'); } catch (e) { console.debug('[pid] Failed to write PID file:', e.message); }
     process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
+
+    // Health check HTTP server (for Docker healthcheck / monitoring)
+    function startHealthServer() {
+        const port = parseInt(process.env.HEALTH_PORT || '9090', 10);
+        if (isNaN(port) || port < 1 || port > 65535) return;
+        const server = createServer((req, res) => {
+            if (req.url !== '/health' && req.url !== '/') {
+                res.writeHead(404); res.end('Not found');
+                return;
+            }
+            const childAlive = childProc && childProc.exitCode === null && childProc.killed === false;
+            const hbOk = Date.now() - lastHeartbeatTs < 120_000;
+            const healthy = childAlive && hbOk && !shuttingDown;
+            const status = healthy ? 200 : 503;
+            const body = JSON.stringify({
+                status: healthy ? 'ok' : 'degraded',
+                pid: process.pid,
+                uptime: process.uptime(),
+                childAlive,
+                lastHeartbeatAgo: Date.now() - lastHeartbeatTs,
+                shuttingDown,
+            });
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(body);
+        });
+        server.listen(port, '127.0.0.1', () => {
+            console.log(`[health] HTTP health endpoint at http://127.0.0.1:${port}/health`);
+        });
+        server.unref();
+    }
 
     let childProc = null;
     let shuttingDown = false;
@@ -213,6 +244,8 @@ if (process.env.OPENCODE_CHILD !== '1') {
             }, 500);
         }
     });
+
+    startHealthServer();
 
     process.on('SIGINT', () => {
         if (shuttingDown) return;

@@ -190,7 +190,7 @@ export async function startWeixinBot(botConfig, restartFn) {
     console.log(`Using account: ${firstCreds.accountId}${credentialsList.length > 1 ? ` (+${credentialsList.length - 1} more)` : ''}`);
     const openCodeSessions = new LRUSessionMap({ maxSize: 100, ttlMs: 30 * 60 * 1000, name: 'opencode-sessions' });
     // 定期清理过期 session (每 5 分钟)
-    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000);
+    setInterval(() => openCodeSessions.cleanup(), 5 * 60 * 1000).unref();
 
     let opencodeServer = null;
     try {

@@ -332,6 +332,18 @@ export async function initOpenCode() {
     }
     return null;
 }
+
+/**
+ * Reset the cached OpenCode instance + server reference.
+ * Call before retrying initOpenCode() after an AbortError or fatal disconnect
+ * to force a fresh server spawn instead of returning the stale singleton.
+ */
+export function resetOpenCode() {
+    opencodeInstance = null;
+    opencodeServer = null;
+    console.log('[opencode] reset cached instance (forced fresh start next call)');
+}
+
 export async function verifyOpenCodeInstalled() {
     return new Promise((resolve) => {
         const isWindows = platform() === 'win32';
